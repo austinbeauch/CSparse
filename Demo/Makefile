@@ -28,6 +28,9 @@ cs_demo2: lib cs_demo2.c cs_demo.c cs_demo.h Makefile
 cs_demo3: lib cs_demo3.c cs_demo.c cs_demo.h Makefile
 	$(CC) $(CF) $(I) -o cs_demo3 cs_demo3.c cs_demo.c $(CS) -lm
 
+ichol_demo: lib ichol_demo.c Makefile
+	$(CC) $(CF) $(I) -o ichol_demo ichol_demo.c $(CS)
+
 clean:
 	- $(RM) *.o
 
