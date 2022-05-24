@@ -2,27 +2,11 @@
 #include <stdio.h>
 #include "cs.h"
 
-#define calloc mxCalloc
-
-// typedef struct DenseVector    /* matrix in compressed-column or triplet form */
-// {
-//     double *data;
-//     int *index;
-// } dense ;
-
 typedef struct DenseVector
 {
     double data;
     int index;
 } dvec ;
-
-// dense *vector_alloc(csi n){
-//     dense *x = cs_calloc(1, sizeof(dense));
-//     x->data = cs_malloc(n, sizeof(double));
-//     x->index = cs_malloc(n, sizeof(csi));
-//     for (size_t i = 0; i < n; i++) x->index[i] = i;
-//     return x;
-// }
 
 void print(double *arr, int num){
     for (int i = 0; i < num; i++) {
@@ -135,8 +119,6 @@ cs *cs_ichol (const cs *A, csi t, csi max_p)
 
         // sort data and indices so we can store row in Li
         qsort(vec, top, sizeof(dvec), cmp);
-        // for (i=0; i<top; i++) printf("%f ", vec[i].data);
-        // printf("\n");
 
         // store top entries in Lx and Li
         for (i = 0; i < max_p && i < top; i++){
@@ -159,6 +141,8 @@ cs *cs_ichol (const cs *A, csi t, csi max_p)
         Lp[pcount++] = Lp[pcount-1] + top + 1;
 
     }
+
+    L->n = A->n; L->m = A->n;
     return L;
 }
 
@@ -173,8 +157,8 @@ int main (void)
     double cpu_time_used;
 
     FILE *fp;
-    stdin = fopen("../Matrix/eu3_2_0", "rb+");
-    // stdin = fopen("../Matrix/eu3_22_0", "rb+");
+    // stdin = fopen("../Matrix/eu3_2_0", "rb+");
+    stdin = fopen("../Matrix/eu3_22_0", "rb+");
     // stdin = fopen("../Matrix/dense_rand", "rb+");
     // stdin = fopen("../Matrix/triplet_mat", "rb+");
     T = cs_load(stdin) ;
@@ -193,17 +177,13 @@ int main (void)
     // printf("chol CPU Time: %f\n", cpu_time_used);
 
     start = clock();
-    // ichol(t, p)
-    float t = 0;
-    int p = n;
-    L = cs_ichol(A, 0, n);
+    float t = 0; int p = n;
+    L = cs_ichol(A, t, p);
     end = clock();
     cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
     printf("ichol CPU Time: %f\n", cpu_time_used);
 
-    printf ("ichol(L, %e, %d):\n", t, p) ; cs_print (L, 0) ;
-    // printf("n = %li\n", n);
-    // printf ("N:\n") ; cs_print (N->L, 0) ; /* print A */
+    // printf ("ichol(L, %e, %d):\n", t, p) ; cs_print (L, 0) ;
     // FILE *fptr;
     // fptr = fopen("out","w");
     // cs_save(N->L, fptr);
