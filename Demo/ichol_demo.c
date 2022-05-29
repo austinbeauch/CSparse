@@ -74,7 +74,7 @@ int compare_indices(const void *a, const void *b)
     return 0;
 }
 
-cs *add_vecs(cs *A, cs *B, float alpha, float beta){
+cs *add_spvec(cs *A, cs *B, float alpha, float beta){
     cs *C;
     double *Ax, *Bx, *Cx;
     csi *Ai, *Ap, *Bp, *Bi, *Cp, *Ci;
@@ -251,34 +251,25 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
     Lp = L->p ; Li = L->i ; Lx = L->x ;
     Lp[0] = 0;
 
-    double *Bx, *Cx;
-    csi *Bp, *Bi, *Cp, *Ci;
-    B = cs_spalloc (n, 1, n, 1, 0); 
-    Bp = B->p ; Bi = B->i ; Bx = B->x ;
-    Bp[0] = 0;
+    dvec* b_vec = malloc(n * sizeof *b_vec);
+    dvec* c_vec = malloc(n * sizeof *c_vec);
 
-    C = cs_spalloc (n, 1, n, 1, 0); 
-    Cp = C->p ; Ci = C->i ; Cx = C->x ;
-    Cp[0] = 0;
-
-    csi bcount = 0;
+    csi bcount = 0, ccount = 0;
 
     for (k = 0 ; k < n ; k++) { 
 
-        // for (i=0; i<n; i++) Bx[i] = 0;  Bi[i] = 0;
-        
-        Bp[0] = 0;
-        Bp[1] = 0;
+        // TODO: future austin, just do k=4 and set L manually and figure out what's going wrong
 
-        bcount = 0;
+        for (i = 0 ; i < n-k ; i++) {
+            b_vec[i].data = 0;  b_vec[i].index = i;
+            c_vec[i].data = 0;  c_vec[i].index = i;
+        }
+
         // grab kth lower column from A
-        B->m = n-k; // set to a lenght k+1 column vector
         for (p = Ap [k] ; p < Ap [k+1] ; p++) {
             if (Ai[p] < k) continue;
-            Bx[bcount]   = Ax[p];
-            Bi[bcount++] = Ai[p] - k;
+            b_vec[Ai[p]].data = Ax[p];
         }
-        Bp[1] = bcount;
 
         // find nonzero entries in the kth row of L
         for (int search_col = 0; search_col < k; search_col++){
@@ -290,42 +281,42 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
                     float L_jk = Lx[p];
 
                     // need to grab the rest of the column, downwards from p, store in vector C
-                    C->m = n-k;
-                    int ccount = 0;
+                    ccount = 0;
                     for (int pp = p ; pp < Lp [search_col+1] ; pp++) {
-                        Cx[ccount]   = Lx[pp] * L_jk; // do multiplication with L_jk
-                        Ci[ccount++] = Li[pp] - k;
+                        // do multiplication with L_jk
+                        c_vec[Li[pp]].data = Lx[pp] * L_jk;
                     }
-                    Cp[1] = ccount;
+
                     // printf("k=%ld\n", k);
-                    B = add_vecs(B, C, 1, -1);
-                    // B = cs_add(B, C, 1, -1);
-                    Bp = B->p ; Bi = B->i ; Bx = B->x ;
+                    // B = add_vecs(b_vec, c_vec, 1, -1);
+                    for (i = 0 ; i < n-k ; i++) {
+                        b_vec[i].data += c_vec[i].data;
+                    }
+
+                    // B = add_spvec(B, C, 1, -1);
                     break;
                 }
             }
         }
 
-        // set diagonal
-        if (Bx[0] <= 0)
-        {
-            printf("Not positive definite");
-            return L;
-        }
-        
-        Lx[xcount] = sqrt(Bx[0]);
-        Li[xcount++] = Bi[0] + k;
-
-        // set column
-        for (p = Bp [0]+1 ; p < Bp [1] ; p++)
-        {
-            float val = Bx[p] / sqrt(Bx[0]);
-            if (fabs(val) > t)
-            {
-                Lx[xcount]   = val;
-                Li[xcount++] = Bi[p] + k;
+        // put nonzero values at the front of the array
+        x_nnz = 0; l12 = 0;
+        for (i = 0; i < k; i++){
+            if (fabs(x_vec[i].data) > t){ 
+                x_vec[x_nnz].data = x_vec[i].data;
+                x_vec[x_nnz++].index = x_vec[i].index;
             }
+        }
 
+        float diag =  sqrt(x_vec[0].data);;
+        // set diagonal
+        Lx[xcount] = diag;
+        Li[xcount++] = x_vec[1].index;
+
+        // set the rest of the column
+        for (i = 1; i < x_nnz; i++){
+            Lx[xcount] = x_vec[i].data / diag;
+            Li[xcount++] = x_vec[i].index;
         }
 
         Lp[pcount++] = xcount;
@@ -384,7 +375,7 @@ int main (void)
     cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
     printf("left chol CPU Time: %f\n", cpu_time_used);
 
-    // printf ("ichol(L, %e, %d):\n", t, p) ; cs_print (L, 0) ;
+    printf ("ichol(L, %e, %d):\n", t, p) ; cs_print (L, 0) ;
 
     // FILE *fptr;
     // fptr = fopen("out","w");
