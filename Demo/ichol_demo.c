@@ -243,7 +243,6 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
     if (!CS_CSC (A)) return (NULL) ;
     n = A->n ;
     Ap = A->p ; Ai = A->i ; Ax = A->x ;
-    dvec* x_vec = malloc(n * sizeof *x_vec);
     max_p = max_p < n ? max_p : n;
     csi maxvals = (max_p * (max_p+1) / 2) + (max_p * (n-max_p));
 
@@ -256,11 +255,9 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
 
     csi bcount = 0, ccount = 0;
 
-    for (k = 0 ; k < n ; k++) { 
+    for (k = 0 ; k < n ; k++) {        
 
-        // TODO: future austin, just do k=4 and set L manually and figure out what's going wrong
-
-        for (i = 0 ; i < n-k ; i++) {
+        for (i = 0 ; i < n ; i++) {
             b_vec[i].data = 0;  b_vec[i].index = i;
             c_vec[i].data = 0;  c_vec[i].index = i;
         }
@@ -289,8 +286,8 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
 
                     // printf("k=%ld\n", k);
                     // B = add_vecs(b_vec, c_vec, 1, -1);
-                    for (i = 0 ; i < n-k ; i++) {
-                        b_vec[i].data += c_vec[i].data;
+                    for (i = 0 ; i < n ; i++) {
+                        b_vec[i].data -= c_vec[i].data;
                     }
 
                     // B = add_spvec(B, C, 1, -1);
@@ -301,22 +298,24 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
 
         // put nonzero values at the front of the array
         x_nnz = 0; l12 = 0;
-        for (i = 0; i < k; i++){
-            if (fabs(x_vec[i].data) > t){ 
-                x_vec[x_nnz].data = x_vec[i].data;
-                x_vec[x_nnz++].index = x_vec[i].index;
+        for (i = 0; i < n; i++){
+            if (fabs(b_vec[i].data) > t){ 
+                b_vec[x_nnz].data = b_vec[i].data;
+                b_vec[x_nnz++].index = b_vec[i].index;
             }
+            if (x_nnz > max_p) break; // bad p implementation
+            
         }
 
-        float diag =  sqrt(x_vec[0].data);;
+        float diag =  sqrt(b_vec[0].data);;
         // set diagonal
         Lx[xcount] = diag;
-        Li[xcount++] = x_vec[1].index;
+        Li[xcount++] = b_vec[0].index;
 
         // set the rest of the column
         for (i = 1; i < x_nnz; i++){
-            Lx[xcount] = x_vec[i].data / diag;
-            Li[xcount++] = x_vec[i].index;
+            Lx[xcount] = b_vec[i].data / diag;
+            Li[xcount++] = b_vec[i].index;
         }
 
         Lp[pcount++] = xcount;
@@ -337,11 +336,11 @@ int main (void)
     double cpu_time_used;
 
     FILE *fp;
-    stdin = fopen("../Matrix/eu3_2_0", "rb+");
+    // stdin = fopen("../Matrix/eu3_2_0", "rb+");
     // stdin = fopen("../Matrix/eu3_22_0", "rb+");
     // stdin = fopen("../Matrix/eu3_100_0", "rb+");
     // stdin = fopen("../Matrix/dense_rand", "rb+");
-    // stdin = fopen("../Matrix/triplet_mat", "rb+");
+    stdin = fopen("../Matrix/triplet_mat", "rb+");
     // stdin = fopen("../Matrix/manual_8x8", "rb+");
     // stdin = fopen("../Matrix/A5x5", "rb+");
 
@@ -352,21 +351,22 @@ int main (void)
     n = A->n ;
     printf("n = %li\n", n);
 
-    // start = clock();
-    // S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
-    // N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
-    // // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
-    // // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
-    // end = clock();
-    // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
-    // printf("full chol CPU Time: %f\n", cpu_time_used);
+    start = clock();
+    S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
+    N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
+    // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
+    // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
+    end = clock();
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
+    printf("full chol CPU Time: %f\n", cpu_time_used);
 
-    // start = clock();
-    float t = 0; int p = n;
-    // L = cs_ichol(A, t, n);
-    // end = clock();
-    // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
-    // printf("up chol CPU Time: %f\n", cpu_time_used);
+    float t = 1e-1; int p = 20;
+
+    start = clock();
+    L = cs_ichol(A, t, n);
+    end = clock();
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+    printf("up chol CPU Time: %f\n", cpu_time_used);
 
     start = clock();
     t = 0; p = n;
@@ -375,7 +375,7 @@ int main (void)
     cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
     printf("left chol CPU Time: %f\n", cpu_time_used);
 
-    printf ("ichol(L, %e, %d):\n", t, p) ; cs_print (L, 0) ;
+    // printf ("ichol(L, %e, %d):\n", t, p) ; cs_print (L, 0) ;
 
     // FILE *fptr;
     // fptr = fopen("out","w");
