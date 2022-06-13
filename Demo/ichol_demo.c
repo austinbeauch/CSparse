@@ -132,7 +132,7 @@ cs *add_spvec(cs *A, cs *B, float alpha, float beta){
     return C ;
 }
 
-cs *cs_ichol (const cs *A, float t, csi max_p)
+cs *cs_ichol_up (const cs *A, float t, csi max_p)
 {
 
     clock_t start, end;
@@ -226,7 +226,6 @@ cs *cs_ichol (const cs *A, float t, csi max_p)
         Lx[xcount] = sqrt(Akk - l12);
         Li[xcount++] = k;
         Lp[pcount++] = Lp[pcount-1] + keep_vals + 1; // or just xcount?
-
     }
 
     L->n = A->n; L->m = A->n;
@@ -324,6 +323,65 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
     return L;
 }
 
+csn *cs_ichol (const cs *A, const css *S, float t, csi max_p)
+{
+    double d, lki, *Lx, *x, *Cx ;
+    csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci ;
+    cs *L, *C, *E ;
+    csn *N ;
+    if (!CS_CSC (A) || !S || !S->cp || !S->parent) return (NULL) ;
+    n = A->n ;
+    N = cs_calloc (1, sizeof (csn)) ;       /* allocate result */
+    c = cs_malloc (2*n, sizeof (csi)) ;     /* get csi workspace */
+    x = cs_malloc (n, sizeof (double)) ;    /* get double workspace */
+    cp = S->cp ; pinv = S->pinv ; parent = S->parent ;
+    C = pinv ? cs_symperm (A, pinv, 1) : ((cs *) A) ;
+    E = pinv ? C : NULL ;           /* E is alias for A, or a copy E=A(p,p) */
+    if (!N || !c || !x || !C) return (cs_ndone (N, E, c, x, 0)) ;
+    s = c + n ;
+    Cp = C->p ; Ci = C->i ; Cx = C->x ;
+    N->L = L = cs_spalloc (n, n, cp [n], 1, 0) ;    /* allocate result */
+    if (!L) return (cs_ndone (N, E, c, x, 0)) ;
+    Lp = L->p ; Li = L->i ; Lx = L->x ;
+    for (k = 0 ; k < n ; k++) Lp [k] = c [k] = cp [k] ;
+    for (k = 0 ; k < n ; k++)       /* compute L(k,:) for L*L' = C */
+    {
+        /* --- Nonzero pattern of L(k,:) ------------------------------------ */
+        top = cs_ereach (C, k, parent, s, c) ;      /* find pattern of L(k,:) */
+        x [k] = 0 ;                                 /* x (0:k) is now zero */
+        for (p = Cp [k] ; p < Cp [k+1] ; p++)       /* x = full(triu(C(:,k))) */
+        {
+            if (Ci [p] <= k) x [Ci [p]] = Cx [p] ;
+        }
+        d = x [k] ;                     /* d = C(k,k) */
+        x [k] = 0 ;                     /* clear x for k+1st iteration */
+        /* --- Triangular solve --------------------------------------------- */
+        for ( ; top < n ; top++)    /* solve L(0:k-1,0:k-1) * x = C(:,k) */
+        {
+            i = s [top] ;               /* s [top..n-1] is pattern of L(k,:) */
+            lki = x [i] / Lx [Lp [i]] ; /* L(k,i) = x (i) / L(i,i) */
+            x [i] = 0 ;                 /* clear x for k+1st iteration */
+            
+            for (p = Lp [i] + 1 ; p < c [i] ; p++)
+            {
+                x [Li [p]] -= Lx [p] * lki ;
+            }
+
+            d -= lki * lki ;            /* d = d - L(k,i)*L(k,i) */
+            p = c [i]++ ;
+            Li [p] = k ;                /* store L(k,i) in column i */
+            Lx [p] = lki ;
+        }
+        /* --- Compute L(k,k) ----------------------------------------------- */
+        if (d <= 0) return (cs_ndone (N, E, c, x, 0)) ; /* not pos def */
+        p = c [k]++ ;
+        Li [p] = k ;                /* store L(k,k) = sqrt (d) in column k */
+        Lx [p] = sqrt (d) ;
+    }
+    Lp [n] = cp [n] ;               /* finalize L */
+    return (cs_ndone (N, E, c, x, 1)) ; /* success: free E,s,x; return N */
+}
+
 
 int main (void)
 {
@@ -336,11 +394,11 @@ int main (void)
     double cpu_time_used;
 
     FILE *fp;
-    // stdin = fopen("../Matrix/eu3_2_0", "rb+");
+    stdin = fopen("../Matrix/eu3_2_0", "rb+");
     // stdin = fopen("../Matrix/eu3_22_0", "rb+");
     // stdin = fopen("../Matrix/eu3_100_0", "rb+");
     // stdin = fopen("../Matrix/dense_rand", "rb+");
-    stdin = fopen("../Matrix/triplet_mat", "rb+");
+    // stdin = fopen("../Matrix/triplet_mat", "rb+");
     // stdin = fopen("../Matrix/manual_8x8", "rb+");
     // stdin = fopen("../Matrix/A5x5", "rb+");
 
@@ -354,27 +412,32 @@ int main (void)
     start = clock();
     S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
     N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
-    // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
+    printf ("chol(L):\n") ; cs_print (N->L, 0) ;
     // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
     end = clock();
     cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
     printf("full chol CPU Time: %f\n", cpu_time_used);
 
     float t = 1e-1; int p = 20;
-
     start = clock();
-    L = cs_ichol(A, t, n);
-    end = clock();
-    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
-    printf("up chol CPU Time: %f\n", cpu_time_used);
+    S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
+    N = cs_ichol (A, S, t, p) ;                    /* numeric Cholesky factorization */
+    printf ("chol(L):\n") ; cs_print (N->L, 0) ;
+    printf("full chol CPU Time: %f\n", cpu_time_used);
 
-    start = clock();
-    t = 0; p = n;
-    L = cs_ichol_left(A, t, n);
-    end = clock();
-    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
-    printf("left chol CPU Time: %f\n", cpu_time_used);
 
+    // start = clock();
+    // L = cs_ichol_up(A, t, n);
+    // end = clock();
+    // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+    // printf("up chol CPU Time: %f\n", cpu_time_used);
+
+    // start = clock();
+    // t = 0; p = n;
+    // L = cs_ichol_left(A, t, n);
+    // end = clock();
+    // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+    // printf("left chol CPU Time: %f\n", cpu_time_used);
     // printf ("ichol(L, %e, %d):\n", t, p) ; cs_print (L, 0) ;
 
     // FILE *fptr;
