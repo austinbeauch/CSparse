@@ -325,60 +325,114 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
 
 csn *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 {
-    double d, lki, *Lx, *x, *Cx ;
-    csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci ;
-    cs *L, *C, *E ;
+    /*
+        TODO: Add threshold to not add small values. ✅
+        TODO: Remove small values (above) from indice and pointer arrays. 
+                Do this during, or after? Need to remove and possibly shift everything over. Not great. 
+                Doing it after means we have the full allocation.
+        TODO: Sort row entries to keep the top p elements.
+        TODO: Remove smallest (n-p) elements from indices and pointer arrays. Do this during, or after?
+    */
+    double d, lki, *Lx, *x, *Cx, *Ux ;
+    csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci, *Up, *Ui ;
+    cs *L, *C, *E, *U ;
     csn *N ;
     if (!CS_CSC (A) || !S || !S->cp || !S->parent) return (NULL) ;
     n = A->n ;
     N = cs_calloc (1, sizeof (csn)) ;       /* allocate result */
     c = cs_malloc (2*n, sizeof (csi)) ;     /* get csi workspace */
-    x = cs_malloc (n, sizeof (double)) ;    /* get double workspace */
+    // x = cs_malloc (n, sizeof (double)) ;    /* get double workspace */
     cp = S->cp ; pinv = S->pinv ; parent = S->parent ;
     C = pinv ? cs_symperm (A, pinv, 1) : ((cs *) A) ;
     E = pinv ? C : NULL ;           /* E is alias for A, or a copy E=A(p,p) */
-    if (!N || !c || !x || !C) return (cs_ndone (N, E, c, x, 0)) ;
+    // if (!N || !c || !x || !C) return (cs_ndone (N, E, c, x, 0)) ;
     s = c + n ;
     Cp = C->p ; Ci = C->i ; Cx = C->x ;
+
     N->L = L = cs_spalloc (n, n, cp [n], 1, 0) ;    /* allocate result */
     if (!L) return (cs_ndone (N, E, c, x, 0)) ;
     Lp = L->p ; Li = L->i ; Lx = L->x ;
+
+    // TODO: Allocate in terms of max_p instead of cp[n]? This will require removal in place.
+    U = cs_spalloc (n, n, cp [n], 1, 0) ;  
+    Up = U->p ; Ui = U->i ; Ux = U->x ;
+    csi uxcount = 0;
+    csi upcount = 1;
+    Up[0] = 0; Up[1] = 1;
+    dvec* x_vec = malloc(n * sizeof *x_vec);
+
     for (k = 0 ; k < n ; k++) Lp [k] = c [k] = cp [k] ;
     for (k = 0 ; k < n ; k++)       /* compute L(k,:) for L*L' = C */
     {
+
+        for (i = 0 ; i < k ; i++) {
+            x_vec[i].data = 0;
+            x_vec[i].index = i;
+        }
+
         /* --- Nonzero pattern of L(k,:) ------------------------------------ */
         top = cs_ereach (C, k, parent, s, c) ;      /* find pattern of L(k,:) */
-        x [k] = 0 ;                                 /* x (0:k) is now zero */
+        x_vec[k].data = 0;                          /* x (0:k) is now zero */
         for (p = Cp [k] ; p < Cp [k+1] ; p++)       /* x = full(triu(C(:,k))) */
         {
-            if (Ci [p] <= k) x [Ci [p]] = Cx [p] ;
+            if (Ci [p] <= k) {
+                x_vec[Ci[p]].data = Cx[p];
+            }
         }
-        d = x [k] ;                     /* d = C(k,k) */
-        x [k] = 0 ;                     /* clear x for k+1st iteration */
+
+        d = x_vec[k].data ;                     /* d = C(k,k) */
+        // x_vec[k].data = 0 ;                     /* clear x for k+1st iteration */
         /* --- Triangular solve --------------------------------------------- */
         for ( ; top < n ; top++)    /* solve L(0:k-1,0:k-1) * x = C(:,k) */
         {
             i = s [top] ;               /* s [top..n-1] is pattern of L(k,:) */
-            lki = x [i] / Lx [Lp [i]] ; /* L(k,i) = x (i) / L(i,i) */
-            x [i] = 0 ;                 /* clear x for k+1st iteration */
+
+            // ith diagonal 
+            lki = x_vec[i].data / Ux [Up[i+1]-1] ; /* L(k,i) = x (i) / L(i,i) */
+            // x_vec[i].data = 0;              /* clear x for k+1st iteration */
             
+            // iterate ith column downwards from diagonal, updating our current value
             for (p = Lp [i] + 1 ; p < c [i] ; p++)
             {
-                x [Li [p]] -= Lx [p] * lki ;
+                // x [Li [p]] -= Lx [p] * lki ;
+                // this x(i) can impact L(k,i) = x (i) / L(i,i) above
+                x_vec[Li [p]].data -= Lx [p] * lki ;  
             }
 
             d -= lki * lki ;            /* d = d - L(k,i)*L(k,i) */
             p = c [i]++ ;
             Li [p] = k ;                /* store L(k,i) in column i */
             Lx [p] = lki ;
+
+            // store all L(k, i) entries in a dense vector for future sorting
+            // 'i' gives us the L column, aka the U row.
+            x_vec[i].data = lki;
         }
+
+        // TODO: add newest values to B (which is upper)
+        for (i = 0; i < k; i++){
+            if (fabs(x_vec[i].data) > t){ 
+                Ux[uxcount]   = x_vec[i].data;
+                Ui[uxcount++] = x_vec[i].index;
+            }
+        }
+
         /* --- Compute L(k,k) ----------------------------------------------- */
-        if (d <= 0) return (cs_ndone (N, E, c, x, 0)) ; /* not pos def */
+        if (d <= 0) {
+            printf("Not positive definite\n");
+            return (cs_ndone (N, E, c, x, 0)) ; 
+        } 
         p = c [k]++ ;
         Li [p] = k ;                /* store L(k,k) = sqrt (d) in column k */
         Lx [p] = sqrt (d) ;
+
+        // store L(k,k) in B as well.
+        Ux[uxcount]   = sqrt(d);
+        Ui[uxcount++] = k;
+        Up[upcount++] = uxcount;
     }
     Lp [n] = cp [n] ;               /* finalize L */
+    U = cs_transpose(U, 1);
     return (cs_ndone (N, E, c, x, 1)) ; /* success: free E,s,x; return N */
 }
 
@@ -409,19 +463,19 @@ int main (void)
     n = A->n ;
     printf("n = %li\n", n);
 
-    start = clock();
-    S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
-    N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
-    printf ("chol(L):\n") ; cs_print (N->L, 0) ;
-    // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
-    end = clock();
-    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
-    printf("full chol CPU Time: %f\n", cpu_time_used);
+    // start = clock();
+    // S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
+    // N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
+    // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
+    // // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
+    // end = clock();
+    // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
+    // printf("full chol CPU Time: %f\n", cpu_time_used);
 
-    float t = 1e-1; int p = 20;
+    float t = 0; int p = 20;
     start = clock();
-    S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
-    N = cs_ichol (A, S, t, p) ;                    /* numeric Cholesky factorization */
+    S = cs_schol (order, A) ;              
+    N = cs_ichol (A, S, t, p) ;                    
     printf ("chol(L):\n") ; cs_print (N->L, 0) ;
     printf("full chol CPU Time: %f\n", cpu_time_used);
 
