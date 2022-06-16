@@ -323,13 +323,13 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
     return L;
 }
 
-csn *cs_ichol (const cs *A, const css *S, float t, csi max_p)
+cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 {
     /*
+        TODO: Just return cs instead of csn?
+        TODO: Build upper triangular factor ✅
         TODO: Add threshold to not add small values. ✅
         TODO: Remove small values (above) from indice and pointer arrays. 
-                Do this during, or after? Need to remove and possibly shift everything over. Not great. 
-                Doing it after means we have the full allocation.
         TODO: Sort row entries to keep the top p elements.
         TODO: Remove smallest (n-p) elements from indices and pointer arrays. Do this during, or after?
     */
@@ -381,35 +381,21 @@ csn *cs_ichol (const cs *A, const css *S, float t, csi max_p)
         }
 
         d = x_vec[k].data ;                     /* d = C(k,k) */
-        // x_vec[k].data = 0 ;                     /* clear x for k+1st iteration */
         /* --- Triangular solve --------------------------------------------- */
         for ( ; top < n ; top++)    /* solve L(0:k-1,0:k-1) * x = C(:,k) */
         {
-            i = s [top] ;               /* s [top..n-1] is pattern of L(k,:) */
+            i = s [top] ;           /* s [top..n-1] is pattern of L(k,:) */
 
-            // ith diagonal 
-            lki = x_vec[i].data / Ux [Up[i+1]-1] ; /* L(k,i) = x (i) / L(i,i) */
-            // x_vec[i].data = 0;              /* clear x for k+1st iteration */
-            
-            // iterate ith column downwards from diagonal, updating our current value
-            for (p = Lp [i] + 1 ; p < c [i] ; p++)
-            {
-                // x [Li [p]] -= Lx [p] * lki ;
-                // this x(i) can impact L(k,i) = x (i) / L(i,i) above
-                x_vec[Li [p]].data -= Lx [p] * lki ;  
-            }
+            // we don't need c[i] here since we know to just go down the column
+            for (p = Up [i] ; p <  Up [i+1]-1 ; p++)
+                x_vec[i].data -= Ux[p] * x_vec[Ui[p]].data;
+
+            x_vec[i].data /= Ux [Up [i+1]-1] ; // divide by diagonal
+            lki = x_vec[i].data;
 
             d -= lki * lki ;            /* d = d - L(k,i)*L(k,i) */
-            p = c [i]++ ;
-            Li [p] = k ;                /* store L(k,i) in column i */
-            Lx [p] = lki ;
-
-            // store all L(k, i) entries in a dense vector for future sorting
-            // 'i' gives us the L column, aka the U row.
-            x_vec[i].data = lki;
         }
 
-        // TODO: add newest values to B (which is upper)
         for (i = 0; i < k; i++){
             if (fabs(x_vec[i].data) > t){ 
                 Ux[uxcount]   = x_vec[i].data;
@@ -431,9 +417,7 @@ csn *cs_ichol (const cs *A, const css *S, float t, csi max_p)
         Ui[uxcount++] = k;
         Up[upcount++] = uxcount;
     }
-    Lp [n] = cp [n] ;               /* finalize L */
-    U = cs_transpose(U, 1);
-    return (cs_ndone (N, E, c, x, 1)) ; /* success: free E,s,x; return N */
+    return U; // TODO: free x_vec
 }
 
 
@@ -472,19 +456,20 @@ int main (void)
     // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
     // printf("full chol CPU Time: %f\n", cpu_time_used);
 
-    float t = 0; int p = 20;
-    start = clock();
-    S = cs_schol (order, A) ;              
-    N = cs_ichol (A, S, t, p) ;                    
-    printf ("chol(L):\n") ; cs_print (N->L, 0) ;
-    printf("full chol CPU Time: %f\n", cpu_time_used);
-
+    float t = 0; int p = n;
 
     // start = clock();
     // L = cs_ichol_up(A, t, n);
+    // // printf ("L:\n") ; cs_print (L, 0) ;
     // end = clock();
     // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
     // printf("up chol CPU Time: %f\n", cpu_time_used);
+
+    start = clock();
+    S = cs_schol (order, A) ;              
+    N = cs_ichol (A, S, t, p) ;                    
+    // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
+    printf("full chol CPU Time: %f\n", cpu_time_used);
 
     // start = clock();
     // t = 0; p = n;
