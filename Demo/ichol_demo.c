@@ -326,42 +326,34 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
 cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 {
     /*
-        TODO: Just return cs instead of csn?
+        TODO: Just return cs instead of csn ✅
         TODO: Build upper triangular factor ✅
         TODO: Add threshold to not add small values. ✅
         TODO: Remove small values (above) from indice and pointer arrays. 
         TODO: Sort row entries to keep the top p elements.
         TODO: Remove smallest (n-p) elements from indices and pointer arrays. Do this during, or after?
+        TODO: Free x_vec and other workspaces
     */
-    double d, lki, *Lx, *x, *Cx, *Ux ;
-    csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci, *Up, *Ui ;
-    cs *L, *C, *E, *U ;
-    csn *N ;
+    double d, lki, *x, *Cx, *Ux ;
+    csi top, i, p, k, n, *pinv, *s, *c, *parent, *Cp, *Ci, *Up, *Ui ;
+    cs *C, *U ;
     if (!CS_CSC (A) || !S || !S->cp || !S->parent) return (NULL) ;
     n = A->n ;
-    N = cs_calloc (1, sizeof (csn)) ;       /* allocate result */
     c = cs_malloc (2*n, sizeof (csi)) ;     /* get csi workspace */
-    // x = cs_malloc (n, sizeof (double)) ;    /* get double workspace */
-    cp = S->cp ; pinv = S->pinv ; parent = S->parent ;
-    C = pinv ? cs_symperm (A, pinv, 1) : ((cs *) A) ;
-    E = pinv ? C : NULL ;           /* E is alias for A, or a copy E=A(p,p) */
-    // if (!N || !c || !x || !C) return (cs_ndone (N, E, c, x, 0)) ;
     s = c + n ;
+
+    pinv = S->pinv ; parent = S->parent ;
+    C = pinv ? cs_symperm (A, pinv, 1) : ((cs *) A) ;
     Cp = C->p ; Ci = C->i ; Cx = C->x ;
 
-    N->L = L = cs_spalloc (n, n, cp [n], 1, 0) ;    /* allocate result */
-    if (!L) return (cs_ndone (N, E, c, x, 0)) ;
-    Lp = L->p ; Li = L->i ; Lx = L->x ;
-
     // TODO: Allocate in terms of max_p instead of cp[n]? This will require removal in place.
-    U = cs_spalloc (n, n, cp [n], 1, 0) ;  
+    U = cs_spalloc (n, n, S->cp[n], 1, 0) ;  
     Up = U->p ; Ui = U->i ; Ux = U->x ;
     csi uxcount = 0;
     csi upcount = 1;
-    Up[0] = 0; Up[1] = 1;
+    
     dvec* x_vec = malloc(n * sizeof *x_vec);
 
-    for (k = 0 ; k < n ; k++) Lp [k] = c [k] = cp [k] ;
     for (k = 0 ; k < n ; k++)       /* compute L(k,:) for L*L' = C */
     {
 
@@ -406,13 +398,10 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
         /* --- Compute L(k,k) ----------------------------------------------- */
         if (d <= 0) {
             printf("Not positive definite\n");
-            return (cs_ndone (N, E, c, x, 0)) ; 
+            // return (cs_ndone (N, E, c, x, 0)) ; 
         } 
-        p = c [k]++ ;
-        Li [p] = k ;                /* store L(k,k) = sqrt (d) in column k */
-        Lx [p] = sqrt (d) ;
 
-        // store L(k,k) in B as well.
+        // store U(k,k)
         Ux[uxcount]   = sqrt(d);
         Ui[uxcount++] = k;
         Up[upcount++] = uxcount;
@@ -467,8 +456,8 @@ int main (void)
 
     start = clock();
     S = cs_schol (order, A) ;              
-    N = cs_ichol (A, S, t, p) ;                    
-    // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
+    L = cs_ichol (A, S, t, p) ;                    
+    printf ("chol(L):\n") ; cs_print (L, 0) ;
     printf("full chol CPU Time: %f\n", cpu_time_used);
 
     // start = clock();
