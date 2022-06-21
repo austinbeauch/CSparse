@@ -324,6 +324,25 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
     return L;
 }
 
+void *csmalloc (csi n, size_t size)
+{
+    return (malloc (CS_MAX (n,1) * size)) ;
+}
+
+cs *csspalloc (csi m, csi n, csi nzmax, csi values, csi triplet)
+{
+    cs *A = cs_calloc (1, sizeof (cs)) ;    /* allocate the cs struct */
+    if (!A) return (NULL) ;                 /* out of memory */
+    A->m = m ;                              /* define dimensions and nzmax */
+    A->n = n ;
+    A->nzmax = nzmax = CS_MAX (nzmax, 1) ;
+    A->nz = triplet ? 0 : -1 ;              /* allocate triplet or comp.col */
+    A->p = csmalloc (n+1, sizeof (csi)) ;
+    A->i = csmalloc (nzmax, sizeof (csi)) ;
+    A->x = csmalloc (nzmax, sizeof (double)) ;
+    return ((!A->p || !A->i || (values && !A->x)) ? cs_spfree (A) : A) ;
+}
+
 cs *transpose (const cs *A, csi values, csi inserts)
 {
     csi p, q, j, *Cp, *Ci, n, m, *Ap, *Ai, *w ;
@@ -331,9 +350,16 @@ cs *transpose (const cs *A, csi values, csi inserts)
     cs *C ;
     if (!CS_CSC (A)) return (NULL) ;    /* check inputs */
     m = A->m ; n = A->n ; Ap = A->p ; Ai = A->i ; Ax = A->x ;
-    C = cs_spalloc (n, m, Ap[n] + inserts, values && Ax, 0) ;       /* allocate result */
+    // printf("Ap[n] + inserts = %ld\n\n", Ap[n] + inserts);
+    C = csspalloc (n, m, Ap[n] + inserts + 10, values && Ax, 0) ;       /* allocate result */
+    // C = cs_spalloc (n, m, 999999999, values && Ax, 0) ;       /* allocate result */
     w = cs_calloc (m, sizeof (csi)) ;                      /* get workspace */
-    if (!C || !w) return (cs_done (C, w, NULL, 0)) ;       /* out of memory */
+    if (!C || !w)
+    {
+        printf("Out of memory\n");
+        return (cs_done (C, w, NULL, 0)) ;       /* out of memory */
+    }
+
     Cp = C->p ; Ci = C->i ; Cx = C->x ;
     if (Ap[n] == 0) w[1] = 1;
     for (p = 0 ; p < Ap [n] ; p++) w [Ai [p]]++ ;          /* row counts */
@@ -346,6 +372,7 @@ cs *transpose (const cs *A, csi values, csi inserts)
             if (Cx) Cx [q] = Ax [p] ;
         }
     }
+    // printf("Finished transposing\n");
     return (cs_done (C, w, NULL, 1)) ;  /* success; free w and return C */
 }
 
@@ -353,12 +380,9 @@ cs *transpose (const cs *A, csi values, csi inserts)
 cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 {
     /*
-        TODO: Just return cs instead of csn?
-        TODO: Build upper triangular factor ✅
         TODO: Add threshold to not add small values. ✅
-        TODO: Remove small values (above) from indice and pointer arrays. 
+        TODO: Insert triangular solve values into L.
         TODO: Sort row entries to keep the top p elements.
-        TODO: Remove smallest (n-p) elements from indices and pointer arrays. Do this during, or after?
     */
     clock_t start, end;
     double cpu_time_used, total_time=0;
@@ -397,11 +421,6 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
         L-> m = k;
         L-> n = k;
         
-        if (k == 2349)
-        {
-            printf("k = %ld\n", k);
-        }
-        
         for (i = 0 ; i < k ; i++) {
             x_vec[i].data = 0;
             x_vec[i].index = i;
@@ -437,16 +456,16 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
             d -= lki * lki ;            /* d = d - L(k,i)*L(k,i) */
         }
 
-        // TODO: transpose the matrix to get the upper triangular matrix, insert values, transpose back
-        // get the transpose time
+        // Instead of tranposing twice, what if we just did one pass over the arrays while shifting + inserting the new values
         start = clock();
+
+        // transpose randomly takes a couple hundreths of a second
         L = transpose(L, 1, inserts+1); // +1 to account for diagonal
         end = clock();
         cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
         if (cpu_time_used > 0){
             printf("k = %ld, Transpose time: %e\n", k, cpu_time_used);
         }
-        // printf("Transpose time: %f\n", cpu_time_used);
 
         Lp = L->p ; Li = L->i ; Lx = L->x ;
         L->m = k+1;
@@ -501,15 +520,14 @@ int main (void)
 
     FILE *fp;
     // stdin = fopen("../Matrix/eu3_2_0", "rb+");
-    stdin = fopen("../Matrix/eu3_10_0", "rb+");
-    // stdin = fopen("../Matrix/eu3_15_0", "rb+");
+    // stdin = fopen("../Matrix/eu3_10_0", "rb+");
+    stdin = fopen("../Matrix/eu3_15_0", "rb+");
     // stdin = fopen("../Matrix/eu3_22_0", "rb+");
     // stdin = fopen("../Matrix/eu3_100_0", "rb+");
     // stdin = fopen("../Matrix/dense_rand", "rb+");
     // stdin = fopen("../Matrix/triplet_mat", "rb+");
     // stdin = fopen("../Matrix/manual_8x8", "rb+");
-    // stdin = fopen("../Matrix/A5x5", "rb+");
-    
+    // stdin = fopen("../Matrix/A5x5", "rb+");    
 
     T = cs_load(stdin) ;
     A = cs_compress (T) ;              
@@ -518,19 +536,19 @@ int main (void)
     n = A->n ;
     printf("n = %li\n", n);
 
-    start = clock();
-    S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
-    N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
-    // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
-    // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
-    end = clock();
-    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
-    printf("full chol CPU Time: %f\n", cpu_time_used);
+    // start = clock();
+    // S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
+    // N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
+    // // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
+    // // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
+    // end = clock();
+    // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
+    // printf("full chol CPU Time: %f\n", cpu_time_used);
 
     float t = 0; int p = n;
 
     start = clock();
-    S = cs_schol (order, A) ;              
+    S = cs_schol (0, A) ;              
     L = cs_ichol (A, S, t, p) ;                    
     // printf ("chol(L):\n") ; cs_print (L, 0) ;
     end = clock();
