@@ -32,6 +32,7 @@ void printv(dvec *arr, int num){
 }
 
 void printcs(cs *A, int num){
+    printf("m=%ld, n=%ld\n", A->m, A->n);
     print(A->x, num);
     printi(A->i, num);
     printi(A->p, num);
@@ -323,6 +324,32 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
     return L;
 }
 
+cs *transpose (const cs *A, csi values, csi inserts)
+{
+    csi p, q, j, *Cp, *Ci, n, m, *Ap, *Ai, *w ;
+    double *Cx, *Ax ;
+    cs *C ;
+    if (!CS_CSC (A)) return (NULL) ;    /* check inputs */
+    m = A->m ; n = A->n ; Ap = A->p ; Ai = A->i ; Ax = A->x ;
+    C = cs_spalloc (n, m, Ap[n] + inserts, values && Ax, 0) ;       /* allocate result */
+    w = cs_calloc (m, sizeof (csi)) ;                      /* get workspace */
+    if (!C || !w) return (cs_done (C, w, NULL, 0)) ;       /* out of memory */
+    Cp = C->p ; Ci = C->i ; Cx = C->x ;
+    if (Ap[n] == 0) w[1] = 1;
+    for (p = 0 ; p < Ap [n] ; p++) w [Ai [p]]++ ;          /* row counts */
+    cs_cumsum (Cp, w, m) ;                                 /* row pointers */
+    for (j = 0 ; j < n ; j++)
+    {
+        for (p = Ap [j] ; p < Ap [j+1] ; p++)
+        {
+            Ci [q = w [Ai [p]]++] = j ; /* place A(i,j) as entry C(j,i) */
+            if (Cx) Cx [q] = Ax [p] ;
+        }
+    }
+    return (cs_done (C, w, NULL, 1)) ;  /* success; free w and return C */
+}
+
+
 cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 {
     /*
@@ -333,11 +360,16 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
         TODO: Sort row entries to keep the top p elements.
         TODO: Remove smallest (n-p) elements from indices and pointer arrays. Do this during, or after?
     */
-    double d, lki, *Lx, *x, *Cx, *Ux ;
-    csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci, *Up, *Ui ;
+    clock_t start, end;
+    double cpu_time_used, total_time=0;
+    double d, lki, *Lx, *x, *Cx;
+    csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci;
     cs *L, *C, *E, *U ;
     csn *N ;
-    if (!CS_CSC (A) || !S || !S->cp || !S->parent) return (NULL) ;
+    if (!CS_CSC (A) || !S || !S->cp || !S->parent){
+        printf("Error: Invalid input.\n");
+        return (NULL) ;
+    } 
     n = A->n ;
     N = cs_calloc (1, sizeof (csn)) ;       /* allocate result */
     c = cs_malloc (2*n, sizeof (csi)) ;     /* get csi workspace */
@@ -345,26 +377,31 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
     cp = S->cp ; pinv = S->pinv ; parent = S->parent ;
     C = pinv ? cs_symperm (A, pinv, 1) : ((cs *) A) ;
     E = pinv ? C : NULL ;           /* E is alias for A, or a copy E=A(p,p) */
-    // if (!N || !c || !x || !C) return (cs_ndone (N, E, c, x, 0)) ;
+
     s = c + n ;
     Cp = C->p ; Ci = C->i ; Cx = C->x ;
 
-    N->L = L = cs_spalloc (n, n, cp [n], 1, 0) ;    /* allocate result */
-    if (!L) return (cs_ndone (N, E, c, x, 0)) ;
+    // TODO: Allocate in terms of max_p instead of cp[n]? This will require removal in place.
+    csi maxvals = (max_p * (max_p+1) / 2) + (max_p * (n-max_p));
+    L = cs_spalloc (n, n, maxvals, 1, 0) ;  
     Lp = L->p ; Li = L->i ; Lx = L->x ;
 
-    // TODO: Allocate in terms of max_p instead of cp[n]? This will require removal in place.
-    U = cs_spalloc (n, n, cp [n], 1, 0) ;  
-    Up = U->p ; Ui = U->i ; Ux = U->x ;
-    csi uxcount = 0;
-    csi upcount = 1;
-    Up[0] = 0; Up[1] = 1;
+    csi xcount = 0;
+    csi pcount = 1;
+    Lp[0] = 0; Lp[1] = 1;
     dvec* x_vec = malloc(n * sizeof *x_vec);
 
-    for (k = 0 ; k < n ; k++) Lp [k] = c [k] = cp [k] ;
+    for (k = 0 ; k < n ; k++) c [k] = cp [k] ;
     for (k = 0 ; k < n ; k++)       /* compute L(k,:) for L*L' = C */
     {
-
+        L-> m = k;
+        L-> n = k;
+        
+        if (k == 2349)
+        {
+            printf("k = %ld\n", k);
+        }
+        
         for (i = 0 ; i < k ; i++) {
             x_vec[i].data = 0;
             x_vec[i].index = i;
@@ -382,42 +419,73 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 
         d = x_vec[k].data ;                     /* d = C(k,k) */
         /* --- Triangular solve --------------------------------------------- */
+        csi inserts = 0;
         for ( ; top < n ; top++)    /* solve L(0:k-1,0:k-1) * x = C(:,k) */
         {
             i = s [top] ;           /* s [top..n-1] is pattern of L(k,:) */
 
-            // we don't need c[i] here since we know to just go down the column
-            for (p = Up [i] ; p <  Up [i+1]-1 ; p++)
-                x_vec[i].data -= Ux[p] * x_vec[Ui[p]].data;
-
-            x_vec[i].data /= Ux [Up [i+1]-1] ; // divide by diagonal
+            // printf("    i=%ld, Lx[Lp[i]]=%0.3f\n", i, Lx [Lp [i]]);
+            inserts++;
+            // get the ith column for computation 
+            x_vec[i].data /= Lx [Lp [i]] ;
             lki = x_vec[i].data;
+            for (p = Lp [i] + 1 ; p < Lp[i+1] ; p++){
+                // printf("    flop %0.3f -= %0.3f * %0.3f\n", x_vec[Li[p]].data, Lx[p], lki);
+                x_vec[Li [p]].data -= Lx [p] * lki;
+            }
 
             d -= lki * lki ;            /* d = d - L(k,i)*L(k,i) */
         }
 
+        // TODO: transpose the matrix to get the upper triangular matrix, insert values, transpose back
+        // get the transpose time
+        start = clock();
+        L = transpose(L, 1, inserts+1); // +1 to account for diagonal
+        end = clock();
+        cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
+        if (cpu_time_used > 0){
+            printf("k = %ld, Transpose time: %e\n", k, cpu_time_used);
+        }
+        // printf("Transpose time: %f\n", cpu_time_used);
+
+        Lp = L->p ; Li = L->i ; Lx = L->x ;
+        L->m = k+1;
+        L->n = k+1;
+
+        // insert values into the upper-triangular form
         for (i = 0; i < k; i++){
             if (fabs(x_vec[i].data) > t){ 
-                Ux[uxcount]   = x_vec[i].data;
-                Ui[uxcount++] = x_vec[i].index;
+                // printf("Insert %f at %ld\n", x_vec[i].data, xcount);
+                Lx[xcount]   = x_vec[i].data;
+                Li[xcount++] = x_vec[i].index;
             }
         }
 
         /* --- Compute L(k,k) ----------------------------------------------- */
         if (d <= 0) {
             printf("Not positive definite\n");
-            return (cs_ndone (N, E, c, x, 0)) ; 
+            return NULL; 
         } 
-        p = c [k]++ ;
-        Li [p] = k ;                /* store L(k,k) = sqrt (d) in column k */
-        Lx [p] = sqrt (d) ;
 
-        // store L(k,k) in B as well.
-        Ux[uxcount]   = sqrt(d);
-        Ui[uxcount++] = k;
-        Up[upcount++] = uxcount;
+        Lx[xcount]   = sqrt(d);
+        Li[xcount++] = k;
+        Lp[pcount++] = xcount;
+
+        // transpose back
+        start = clock();
+        L = transpose(L, 1, 0);
+        end = clock();
+        cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
+        total_time += cpu_time_used;
+        if (cpu_time_used > 0){
+            printf("k = %ld, Transpose time: %e\n", k, cpu_time_used);
+        }
+
+        Lp = L->p ; Li = L->i ; Lx = L->x ;
     }
-    return U; // TODO: free x_vec
+    //print total time used
+    printf("Total time: %f\n", total_time);
+    return L; // TODO: free x_vec
 }
 
 
@@ -432,13 +500,16 @@ int main (void)
     double cpu_time_used;
 
     FILE *fp;
-    stdin = fopen("../Matrix/eu3_2_0", "rb+");
+    // stdin = fopen("../Matrix/eu3_2_0", "rb+");
+    stdin = fopen("../Matrix/eu3_10_0", "rb+");
+    // stdin = fopen("../Matrix/eu3_15_0", "rb+");
     // stdin = fopen("../Matrix/eu3_22_0", "rb+");
     // stdin = fopen("../Matrix/eu3_100_0", "rb+");
     // stdin = fopen("../Matrix/dense_rand", "rb+");
     // stdin = fopen("../Matrix/triplet_mat", "rb+");
     // stdin = fopen("../Matrix/manual_8x8", "rb+");
     // stdin = fopen("../Matrix/A5x5", "rb+");
+    
 
     T = cs_load(stdin) ;
     A = cs_compress (T) ;              
@@ -447,37 +518,24 @@ int main (void)
     n = A->n ;
     printf("n = %li\n", n);
 
-    // start = clock();
-    // S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
-    // N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
+    start = clock();
+    S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
+    N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
     // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
-    // // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
-    // end = clock();
-    // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
-    // printf("full chol CPU Time: %f\n", cpu_time_used);
+    // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
+    end = clock();
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
+    printf("full chol CPU Time: %f\n", cpu_time_used);
 
     float t = 0; int p = n;
 
-    // start = clock();
-    // L = cs_ichol_up(A, t, n);
-    // // printf ("L:\n") ; cs_print (L, 0) ;
-    // end = clock();
-    // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
-    // printf("up chol CPU Time: %f\n", cpu_time_used);
-
     start = clock();
     S = cs_schol (order, A) ;              
-    N = cs_ichol (A, S, t, p) ;                    
-    // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
-    printf("full chol CPU Time: %f\n", cpu_time_used);
-
-    // start = clock();
-    // t = 0; p = n;
-    // L = cs_ichol_left(A, t, n);
-    // end = clock();
-    // cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
-    // printf("left chol CPU Time: %f\n", cpu_time_used);
-    // printf ("ichol(L, %e, %d):\n", t, p) ; cs_print (L, 0) ;
+    L = cs_ichol (A, S, t, p) ;                    
+    // printf ("chol(L):\n") ; cs_print (L, 0) ;
+    end = clock();
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
+    printf("ichol CPU Time: %f\n", cpu_time_used);
 
     // FILE *fptr;
     // fptr = fopen("out","w");
