@@ -33,7 +33,7 @@ cs_solve: lib solve_demo.c Makefile
 	$(CC) $(CF) $(I) -o solve_demo solve_demo.c $(CS)
 
 ichol_demo: lib ichol_demo.c Makefile
-	$(CC) $(CF) $(I) -g -O0 -o ichol_demo ichol_demo.c $(CS) 
+	$(CC) $(CF) $(I) -g -O0 -o ichol_demo ichol_demo.c $(CS) -pg
 
 clean:
 	- $(RM) *.o
