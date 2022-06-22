@@ -324,70 +324,18 @@ cs *cs_ichol_left (const cs *A, float t, csi max_p)
     return L;
 }
 
-void *csmalloc (csi n, size_t size)
-{
-    return (malloc (CS_MAX (n,1) * size)) ;
-}
-
-cs *csspalloc (csi m, csi n, csi nzmax, csi values, csi triplet)
-{
-    cs *A = cs_calloc (1, sizeof (cs)) ;    /* allocate the cs struct */
-    if (!A) return (NULL) ;                 /* out of memory */
-    A->m = m ;                              /* define dimensions and nzmax */
-    A->n = n ;
-    A->nzmax = nzmax = CS_MAX (nzmax, 1) ;
-    A->nz = triplet ? 0 : -1 ;              /* allocate triplet or comp.col */
-    A->p = csmalloc (n+1, sizeof (csi)) ;
-    A->i = csmalloc (nzmax, sizeof (csi)) ;
-    A->x = csmalloc (nzmax, sizeof (double)) ;
-    return ((!A->p || !A->i || (values && !A->x)) ? cs_spfree (A) : A) ;
-}
-
-cs *transpose (const cs *A, csi values, csi inserts)
-{
-    csi p, q, j, *Cp, *Ci, n, m, *Ap, *Ai, *w ;
-    double *Cx, *Ax ;
-    cs *C ;
-    if (!CS_CSC (A)) return (NULL) ;    /* check inputs */
-    m = A->m ; n = A->n ; Ap = A->p ; Ai = A->i ; Ax = A->x ;
-    // printf("Ap[n] + inserts = %ld\n\n", Ap[n] + inserts);
-    C = csspalloc (n, m, Ap[n] + inserts + 10, values && Ax, 0) ;       /* allocate result */
-    // C = cs_spalloc (n, m, 999999999, values && Ax, 0) ;       /* allocate result */
-    w = cs_calloc (m, sizeof (csi)) ;                      /* get workspace */
-    if (!C || !w)
-    {
-        printf("Out of memory\n");
-        return (cs_done (C, w, NULL, 0)) ;       /* out of memory */
-    }
-
-    Cp = C->p ; Ci = C->i ; Cx = C->x ;
-    if (Ap[n] == 0) w[1] = 1;
-    for (p = 0 ; p < Ap [n] ; p++) w [Ai [p]]++ ;          /* row counts */
-    cs_cumsum (Cp, w, m) ;                                 /* row pointers */
-    for (j = 0 ; j < n ; j++)
-    {
-        for (p = Ap [j] ; p < Ap [j+1] ; p++)
-        {
-            Ci [q = w [Ai [p]]++] = j ; /* place A(i,j) as entry C(j,i) */
-            if (Cx) Cx [q] = Ax [p] ;
-        }
-    }
-    // printf("Finished transposing\n");
-    return (cs_done (C, w, NULL, 1)) ;  /* success; free w and return C */
-}
-
-
 cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 {
     /*
         TODO: Add threshold to not add small values. ✅
-        TODO: Insert triangular solve values into L.
+        TODO: Insert triangular solve values into L. ✅
         TODO: Sort row entries to keep the top p elements.
     */
+   
     clock_t start, end;
     double cpu_time_used, total_time=0;
     double d, lki, *Lx, *x, *Cx;
-    csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci;
+    csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci, x_nnz, target_idx, curr_idx;
     cs *L, *C, *E, *U ;
     csn *N ;
     if (!CS_CSC (A) || !S || !S->cp || !S->parent){
@@ -417,10 +365,7 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 
     for (k = 0 ; k < n ; k++) c [k] = cp [k] ;
     for (k = 0 ; k < n ; k++)       /* compute L(k,:) for L*L' = C */
-    {
-        L-> m = k;
-        L-> n = k;
-        
+    {        
         for (i = 0 ; i < k ; i++) {
             x_vec[i].data = 0;
             x_vec[i].index = i;
@@ -437,74 +382,72 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
         }
 
         d = x_vec[k].data ;                     /* d = C(k,k) */
+
         /* --- Triangular solve --------------------------------------------- */
-        csi inserts = 0;
         for ( ; top < n ; top++)    /* solve L(0:k-1,0:k-1) * x = C(:,k) */
         {
             i = s [top] ;           /* s [top..n-1] is pattern of L(k,:) */
 
-            // printf("    i=%ld, Lx[Lp[i]]=%0.3f\n", i, Lx [Lp [i]]);
-            inserts++;
-            // get the ith column for computation 
             x_vec[i].data /= Lx [Lp [i]] ;
             lki = x_vec[i].data;
             for (p = Lp [i] + 1 ; p < Lp[i+1] ; p++){
-                // printf("    flop %0.3f -= %0.3f * %0.3f\n", x_vec[Li[p]].data, Lx[p], lki);
                 x_vec[Li [p]].data -= Lx [p] * lki;
             }
 
             d -= lki * lki ;            /* d = d - L(k,i)*L(k,i) */
         }
 
-        // Instead of tranposing twice, what if we just did one pass over the arrays while shifting + inserting the new values
-        start = clock();
-
-        // transpose randomly takes a couple hundreths of a second
-        L = transpose(L, 1, inserts+1); // +1 to account for diagonal
-        end = clock();
-        cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
-        if (cpu_time_used > 0){
-            printf("k = %ld, Transpose time: %e\n", k, cpu_time_used);
-        }
-
-        Lp = L->p ; Li = L->i ; Lx = L->x ;
-        L->m = k+1;
-        L->n = k+1;
-
-        // insert values into the upper-triangular form
-        for (i = 0; i < k; i++){
-            if (fabs(x_vec[i].data) > t){ 
-                // printf("Insert %f at %ld\n", x_vec[i].data, xcount);
-                Lx[xcount]   = x_vec[i].data;
-                Li[xcount++] = x_vec[i].index;
-            }
-        }
-
-        /* --- Compute L(k,k) ----------------------------------------------- */
         if (d <= 0) {
             printf("Not positive definite\n");
             return NULL; 
         } 
 
-        Lx[xcount]   = sqrt(d);
-        Li[xcount++] = k;
-        Lp[pcount++] = xcount;
-
-        // transpose back
-        start = clock();
-        L = transpose(L, 1, 0);
-        end = clock();
-        cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
-        total_time += cpu_time_used;
-        if (cpu_time_used > 0){
-            printf("k = %ld, Transpose time: %e\n", k, cpu_time_used);
+        x_nnz = 0; 
+        for (i = 0; i < k; i++){
+            if (fabs(x_vec[i].data) > t){ 
+                // store nonzeros of x at the start of the array for future sorting
+                x_vec[x_nnz].data = x_vec[i].data;
+                x_vec[x_nnz++].index = x_vec[i].index;
+            }
         }
 
-        Lp = L->p ; Li = L->i ; Lx = L->x ;
+        x_vec[x_nnz].data = sqrt(d);
+        x_vec[x_nnz++].index = k;
+        
+        Lp[k + 1] = Lp[k];
+
+        // iterate backwards fown Lx/Li
+        for (p = Lp[k]; p >= 0; p--){
+            curr_idx = x_vec[x_nnz-1].index;
+            target_idx = Lp[ curr_idx +1 ];
+
+            if (p == target_idx){
+                
+                // shift value in target position, in case something occupies that spot
+                Lx[p + x_nnz] = Lx[p];
+                Li[p + x_nnz] = Li[p];
+
+                // insert the value
+                Lx[p] = x_vec[x_nnz-1].data;
+                Li[p] = k;
+
+                // when we insert we need to shift ALL future column pointers.
+                // TODO: Maybe keep another dense vector n and do a cumsum then add to Lp at the end?
+                for (i = curr_idx+1; i <= k+1; i++) Lp[i]++;
+
+                x_nnz--;
+            }
+
+            // shift values down by x_nnz
+            Lx[p + x_nnz] = Lx[p];
+            Li[p + x_nnz] = Li[p];
+
+            if (p == target_idx) p++;
+            if (x_nnz == 0) break;
+        }
     }
-    //print total time used
-    printf("Total time: %f\n", total_time);
-    return L; // TODO: free x_vec
+
+    return L; // TODO: free x_vec and workspace`
 }
 
 
@@ -521,12 +464,12 @@ int main (void)
     FILE *fp;
     // stdin = fopen("../Matrix/eu3_2_0", "rb+");
     // stdin = fopen("../Matrix/eu3_10_0", "rb+");
-    stdin = fopen("../Matrix/eu3_15_0", "rb+");
+    // stdin = fopen("../Matrix/eu3_15_0", "rb+");
     // stdin = fopen("../Matrix/eu3_22_0", "rb+");
     // stdin = fopen("../Matrix/eu3_100_0", "rb+");
     // stdin = fopen("../Matrix/dense_rand", "rb+");
     // stdin = fopen("../Matrix/triplet_mat", "rb+");
-    // stdin = fopen("../Matrix/manual_8x8", "rb+");
+    stdin = fopen("../Matrix/manual_8x8", "rb+");
     // stdin = fopen("../Matrix/A5x5", "rb+");    
 
     T = cs_load(stdin) ;
@@ -537,7 +480,7 @@ int main (void)
     printf("n = %li\n", n);
 
     // start = clock();
-    // S = cs_schol (order, A) ;               /* ordering and symbolic analysis */
+    // S = cs_schol (0, A) ;               /* ordering and symbolic analysis */
     // N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
     // // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
     // // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
