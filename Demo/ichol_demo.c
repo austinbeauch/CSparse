@@ -333,9 +333,11 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
     */
 
     clock_t start, end;
-    double cpu_time_used, total_cpu_time=0;
-    double d, lki, *Lx, *x, *Cx;
-    csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci, x_nnz, target_idx, curr_idx, *adds;
+    double cpu_time_used, total_shift_time=0, total_solve_time=0, total_store_time=0;
+    double total_reset_time=0, total_pattern_time=0;
+    double d, lki, *Lx, *x, *Cx, curr_data;
+    csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci;
+    csi x_nnz, target_idx, curr_idx, *adds, flops=0;
     cs *L, *C, *E, *U ;
     csn *N ;
     if (!CS_CSC (A) || !S || !S->cp || !S->parent){
@@ -362,23 +364,30 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
     csi xcount = 0;
     csi pcount = 1;
     Lp[0] = 0; Lp[1] = 1;
-    dvec* x_vec = malloc(n * sizeof *x_vec);
 
-    for (k = 0 ; k < n ; k++) c [k] = cp [k] ;
+    dvec *x_vec = (dvec*)malloc(n*sizeof(dvec));
+
+    for (k = 0 ; k < n ; k++) {
+        // x_vec[n].data = 0;
+        // x_vec[n].index = k;
+        c [k] = cp [k] ; 
+    }
     for (k = 0 ; k < n ; k++)       /* compute L(k,:) for L*L' = C */
     {        
         // printf("k = %ld\n", k);
+
         start = clock();
         for (i = 0 ; i <= k+1 ; i++) { 
             x_vec[i].data = 0;
             x_vec[i].index = i;
         }
-        end = clock();
-        cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
-        total_cpu_time += cpu_time_used;
-        if (cpu_time_used > 1e-6 )
-            printf("k = %ld, Reset time: %f\n", k, cpu_time_used);
 
+        // printf("k+1, count = %ld, %ld\n", k+1, count);
+        end = clock();
+        cpu_time_used = (double)(end - start) / CLOCKS_PER_SEC;
+        total_reset_time += cpu_time_used;
+
+        start = clock();
         /* --- Nonzero pattern of L(k,:) ------------------------------------ */
         top = cs_ereach (C, k, parent, s, c) ;      /* find pattern of L(k,:) */
         x_vec[k].data = 0;                          /* x (0:k) is now zero */
@@ -388,6 +397,9 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
                 x_vec[Ci[p]].data = Cx[p];
             }
         }
+        end = clock();
+        cpu_time_used = (double)(end - start) / CLOCKS_PER_SEC;
+        total_pattern_time += cpu_time_used;
 
         d = x_vec[k].data ;                     /* d = C(k,k) */
 
@@ -410,14 +422,22 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
             return NULL; 
         } 
 
+        start = clock();
         x_nnz = 0; 
         for (i = 0; i < k; i++){
             if (fabs(x_vec[i].data) > t){ 
                 // store nonzeros of x at the start of the array for future sorting
                 x_vec[x_nnz].data = x_vec[i].data;
-                x_vec[x_nnz++].index = x_vec[i].index;
+                x_vec[x_nnz].index = x_vec[i].index;
+                // if (i > x_nnz){
+                //     x_vec[i].data = 0;
+                // }
+                x_nnz++;
             }
         }
+        end = clock();
+        cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+        total_store_time += cpu_time_used;
 
         x_vec[x_nnz].data = sqrt(d);
         x_vec[x_nnz++].index = k;
@@ -432,9 +452,10 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
         // x_vec[0].index = 1;  x_vec[1].index = 2;   x_vec[2].index = 3;
 
         Lp[k + 1] = Lp[k];
-
         for (p = Lp[k]; p >= 0; p--){
-            curr_idx = x_vec[x_nnz-1].index;
+            curr_idx  = x_vec[x_nnz-1].index;
+            curr_data = x_vec[x_nnz-1].data;
+
             target_idx = Lp[ curr_idx +1 ];
 
             if (p == target_idx){
@@ -444,7 +465,7 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
                 Li[p + x_nnz] = Li[p];
 
                 // insert the value
-                Lx[p] = x_vec[x_nnz-1].data;
+                Lx[p] = curr_data;
                 Li[p] = k;
 
                 // when we insert we need to shift ALL future column pointers.
@@ -462,6 +483,9 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 
             if (p == target_idx) p++;
             if (x_nnz == 0) break;
+            // TODO: clear/reset x_vec
+            // x_vec[x_nnz-1].data = 0;
+            // x_vec[x_nnz-1].index = x_nnz-1; // is is nnz-1? 
         }
 
         // add cumulative sum of adds to Lp
@@ -471,7 +495,9 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
         // }
 
     }
-    printf("Total cpu time:     %f\n", total_cpu_time);
+    printf("Total reset time:   %f\n", total_reset_time);
+    printf("Total store time =  %f\n", total_store_time);
+    printf("Added dvec ops:     %f\n", total_reset_time + total_store_time);
     return L; // TODO: free x_vec and workspace`
 }
 
@@ -489,7 +515,9 @@ int main (void)
     // stdin = fopen("../Matrix/eu3_2_0", "rb+");
     // stdin = fopen("../Matrix/eu3_10_0", "rb+");
     // stdin = fopen("../Matrix/eu3_15_0", "rb+");
-    stdin = fopen("../Matrix/eu3_22_0", "rb+");
+    // stdin = fopen("../Matrix/eu3_22_0", "rb+");
+    stdin = fopen("../Matrix/eu3_35_0", "rb+");
+    // stdin = fopen("../Matrix/eu3_50_0", "rb+");
     // stdin = fopen("../Matrix/eu3_100_0", "rb+");
     // stdin = fopen("../Matrix/dense_rand", "rb+");
     // stdin = fopen("../Matrix/triplet_mat", "rb+");
@@ -515,7 +543,6 @@ int main (void)
 
     float t = 0; int p = n;
 
-    
     S = cs_schol (0, A) ;      
     start = clock();        
     L = cs_ichol (A, S, t, p) ;                    
