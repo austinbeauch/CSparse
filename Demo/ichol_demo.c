@@ -329,29 +329,24 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
     /*
         TODO: Add threshold to not add small values. ✅
         TODO: Insert triangular solve values into L. ✅
-        TODO: Sort row entries to keep the top p elements.
+        TODO: Sort row entries to keep the top p elements. ✅
     */
-
-    clock_t start, end;
-    double cpu_time_used, total_shift_time=0, total_solve_time=0, total_store_time=0;
+   csi total_vals = 0;
     double total_reset_time=0, total_pattern_time=0;
     double d, lki, *Lx, *x, *Cx, curr_data;
     csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci;
     csi x_nnz, target_idx, curr_idx, *adds, flops=0;
-    cs *L, *C, *E, *U ;
+    cs *L, *C, *U ;
     csn *N ;
     if (!CS_CSC (A) || !S || !S->cp || !S->parent){
         printf("Error: Invalid input.\n");
         return (NULL) ;
     } 
     n = A->n ;
-    N = cs_calloc (1, sizeof (csn)) ;       /* allocate result */
     c = cs_malloc (2*n, sizeof (csi)) ;     /* get csi workspace */
-    adds = cs_malloc (2*n, sizeof (csi)) ; 
     // x = cs_malloc (n, sizeof (double)) ;    /* get double workspace */
     cp = S->cp ; pinv = S->pinv ; parent = S->parent ;
     C = pinv ? cs_symperm (A, pinv, 1) : ((cs *) A) ;
-    E = pinv ? C : NULL ;           /* E is alias for A, or a copy E=A(p,p) */
     s = c + n ;
     Cp = C->p ; Ci = C->i ; Cx = C->x ;
 
@@ -415,31 +410,32 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
             return NULL; 
         } 
 
-        nonzeros[x_nnz].data = sqrt(d);
-        nonzeros[x_nnz++].index = k;
-
-        // TODO: Sort nonzeros to keep the top p elements.
         int keep_vals = x_nnz < max_p - 1 ? x_nnz : max_p - 1;
 
         // sort values if we have more than allowed to keep
         if (x_nnz > keep_vals){
-            // qsort(nonzeros, x_nnz, sizeof(dvec), compare_values);
+            qsort(nonzeros, x_nnz, sizeof(dvec), compare_values);
         }
 
         qsort(nonzeros, keep_vals, sizeof(dvec), compare_indices);  // sort p by index to insert in order
 
+        nonzeros[keep_vals].data = sqrt(d);
+        nonzeros[keep_vals++].index = k;
+
+        total_vals += keep_vals;
+
         Lp[k + 1] = Lp[k];
         for (p = Lp[k]; p >= 0; p--){
-            curr_idx  = nonzeros[x_nnz-1].index;
-            curr_data = nonzeros[x_nnz-1].data;
+            curr_idx  = nonzeros[keep_vals-1].index;
+            curr_data = nonzeros[keep_vals-1].data;
 
             target_idx = Lp[ curr_idx +1 ];
 
             if (p == target_idx){
                 
                 // shift value in target position, in case something occupies that spot
-                Lx[p + x_nnz] = Lx[p];
-                Li[p + x_nnz] = Li[p];
+                Lx[p + keep_vals] = Lx[p];
+                Li[p + keep_vals] = Li[p];
 
                 // insert the value
                 Lx[p] = curr_data;
@@ -448,26 +444,28 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
                 // when we insert we need to shift ALL future column pointers.
                 for (i = curr_idx+1; i <= k+1; i++) Lp[i]++;
 
-                x_nnz--;
+                keep_vals--;
             }
 
             // shift values down by x_nnz
-            Lx[p + x_nnz] = Lx[p];
-            Li[p + x_nnz] = Li[p];
+            Lx[p + keep_vals] = Lx[p];
+            Li[p + keep_vals] = Li[p];
 
             // clear dense x vector
-            nonzeros[x_nnz].data = 0;
-            nonzeros[x_nnz].index = x_nnz; 
+            nonzeros[keep_vals].data = 0;
+            nonzeros[keep_vals].index = keep_vals; 
 
             if (p == target_idx) p++;
-            if (x_nnz == 0) break;
+            if (keep_vals == 0) break;
         }
 
     }
-    printf("Total reset time:   %f\n", total_reset_time);
-    printf("Total store time =  %f\n", total_store_time);
-    printf("Added dvec ops:     %f\n", total_reset_time + total_store_time);
-    return L; // TODO: free x_vec and workspace`
+
+    printf("Total vals: %ld\n", total_vals);
+    free(nonzeros);
+    free(x_vec);
+    free(c);
+    return L;
 }
 
 int main (void)
@@ -489,8 +487,8 @@ int main (void)
     // stdin = fopen("../Matrix/eu3_50_0", "rb+");
     // stdin = fopen("../Matrix/eu3_100_0", "rb+");
     // stdin = fopen("../Matrix/dense_rand", "rb+");
-    // stdin = fopen("../Matrix/triplet_mat", "rb+");
-    stdin = fopen("../Matrix/manual_8x8", "rb+");
+    stdin = fopen("../Matrix/triplet_mat", "rb+");
+    // stdin = fopen("../Matrix/manual_8x8", "rb+");
     // stdin = fopen("../Matrix/A5x5", "rb+");    
 
     T = cs_load(stdin) ;
@@ -507,16 +505,17 @@ int main (void)
     end = clock();
     cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
     // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
+    printf("Total vals: %li\n", N->L->p[n]);
     printf("full chol CPU Time: %f\n\n", cpu_time_used);
 
-    float t = 0; int p = n;
+    float t = 1e-3; int p = n;
 
     S = cs_schol (0, A) ;      
     start = clock();        
     L = cs_ichol (A, S, t, p) ;                    
     end = clock();
     cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
-    printf ("chol(L):\n") ; cs_print (L, 0) ;
+    // printf ("chol(L):\n") ; cs_print (L, 0) ;
     printf("ichol CPU Time: %f\n", cpu_time_used);
 
     // FILE *fptr;
