@@ -58,15 +58,8 @@ int compare_indices(const void *a, const void *b)
     return 0;
 }
 
-
 cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 {
-    /*
-        TODO: Add threshold to not add small values. ✅
-        TODO: Insert triangular solve values into L. ✅
-        TODO: Sort row entries to keep the top p elements. ✅
-    */
-
     double total_reset_time=0, total_pattern_time=0;
     double d, lki, *Lx, *x, *Cx, curr_data;
     csi top, i, p, k, n, *Li, *Lp, *cp, *pinv, *s, *c, *parent, *Cp, *Ci;
@@ -87,9 +80,9 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
 
     csi maxvals = (max_p * (max_p+1) / 2) + (max_p * (n-max_p));
 
-    maxvals = maxvals > Cp[n] ? Cp[n] : maxvals;
+    csi alloc_vals = maxvals > cp[n] ? cp[n] : maxvals;
 
-    L = cs_spalloc (n, n, maxvals, 1, 0);
+    L = cs_spalloc (n, n, alloc_vals, 1, 0);
     Lp = L->p ; Li = L->i ; Lx = L->x ;
     
     dvec *x_vec =    (dvec*)malloc(n*sizeof(dvec));
@@ -203,6 +196,132 @@ cs *cs_ichol (const cs *A, const css *S, float t, csi max_p)
     return L;
 }
 
+// Lx = b, output on vector x
+csi lsolve (const cs *L, double *b, double *x)
+{
+    csi p, j, n, *Lp, *Li ;
+    double *Lx ;
+    if (!CS_CSC (L) || !x) return (0) ;                     /* check inputs */
+    n = L->n ; Lp = L->p ; Li = L->i ; Lx = L->x ;
+
+    // copy b into x
+    for (j = 0 ; j < n ; j++) x [j] = b [j] ;
+
+    for (j = 0 ; j < n ; j++)
+    {
+        x [j] /= Lx [Lp [j]] ;
+        for (p = Lp [j]+1 ; p < Lp [j+1] ; p++)
+        {
+            x [Li [p]] -= Lx [p] * x [j] ;
+        }
+    }
+    return (1) ;
+}
+
+// L^T x = b, output on vector x
+csi ltsolve (const cs *L, double *b, double *x)
+{
+    csi p, j, n, *Lp, *Li ;
+    double *Lx ;
+    if (!CS_CSC (L) || !x) return (0) ;                     /* check inputs */
+    n = L->n ; Lp = L->p ; Li = L->i ; Lx = L->x ;
+
+    // copy b into x
+    for (j = 0 ; j < n ; j++) x [j] = b [j] ;
+    for (j = n-1 ; j >= 0 ; j--)
+    {
+        for (p = Lp [j]+1 ; p < Lp [j+1] ; p++)
+        {
+            x [j] -= Lx [p] * x [Li [p]] ;
+        }
+        x [j] /= Lx [Lp [j]] ;
+    }
+    return (1) ;
+}
+
+double* ichol_pcg(cs *A, double *b, cs *L, double tol, int max_iter){
+
+    double *r, *z, *p, *x, *h, *s, *c, delta=0, delta0=0, delta_new=0, dot=0;
+    csi i, k, n;
+
+    n = A->n ;
+
+    c = cs_malloc (n, sizeof (double)) ; // workspace variable for two step triangular solve
+    r = cs_malloc (n, sizeof (double)) ;
+    z = cs_malloc (n, sizeof (double)) ;
+    p = cs_malloc (n, sizeof (double)) ;
+    x = cs_malloc (n, sizeof (double)) ;
+    h = cs_malloc (n, sizeof (double)) ;
+    s = cs_malloc (n, sizeof (double)) ;
+
+    // compute initial residual, set x0 to 0
+    for (i = 0 ; i < n ; i++) {
+        x[i] = 0;
+        r[i] = 0;     
+    }
+
+    cs_gaxpy (A, x, r) ;                    // r += A*x 
+    for (i = 0 ; i < n ; i++)               // r = b - A*x
+        r [i] = b [i] - r [i] ;
+
+    // compute z0, Mz = r -> z = M^{-1}r -> L^{-T} ( L^{-1} r_{k+1} )
+    // TODO: change solves to output a new vector instead of copy onto dense vector
+    lsolve (L, r, c) ;
+
+    // TODO: check if this ltsolve solves as if the matrix was transposed
+    ltsolve (L, c, h);
+
+    // set delta to the dot product between r and h
+    for (i = 0 ; i < n ; i++) 
+        delta += r[i] * h[i];
+
+    delta0 = delta;
+
+    // copy h into p
+    for (i = 0 ; i < n ; i++) p[i] = h[i];
+
+    for (k = 0; k < max_iter; k++)
+    {
+        if (delta < tol * tol * delta0)
+        {
+            printf("Converged in %ld iterations, residual %0.3e\n", k, delta);
+            free(c); free(r); free(z); free(p); free(h); free(s);
+            return x;
+        }   
+        // zero s
+        for (i = 0 ; i < n ; i++) s[i] = 0;
+        cs_gaxpy(A, p, s);
+
+        // compute alpha
+        dot = 0;
+        for (i = 0 ; i < n ; i++) dot += p[i] * s[i];
+        double alpha = delta / dot;
+
+        // update x
+        for (i = 0 ; i < n ; i++) x[i] += alpha * p[i];
+
+        // update r
+        for (i = 0 ; i < n ; i++) r[i] -= alpha * s[i];
+
+        // compute h
+        lsolve (L, r, c);
+        ltsolve (L, c, h);
+
+        // compute delta
+        delta_new = 0;
+        for (i = 0 ; i < n ; i++) delta_new += r[i] * h[i];
+
+        // update p
+        for (i = 0 ; i < n ; i++) p[i] = h[i] + delta_new / delta * p[i];
+        delta = delta_new;
+    }
+
+    printf("Did not converge in %ld iterations, residual %0.3e\n", k, delta);
+    free(c); free(r); free(z); free(p); free(h); free(s);
+    return x;
+}
+
+
 int main (void)
 {
     cs *T, *A, *L;
@@ -214,12 +333,12 @@ int main (void)
     double cpu_time_used;
 
     // stdin = fopen("../Matrix/eu3_2_0", "rb+");
-    // stdin = fopen("../Matrix/eu3_10_0", "rb+");
+    stdin = fopen("../Matrix/eu3_10_0", "rb+");
     // stdin = fopen("../Matrix/eu3_15_0", "rb+");
     // stdin = fopen("../Matrix/eu3_22_0", "rb+");
     // stdin = fopen("../Matrix/eu3_35_0", "rb+");
     // stdin = fopen("../Matrix/eu3_50_0", "rb+");
-    stdin = fopen("../Matrix/eu3_100_0", "rb+");
+    // stdin = fopen("../Matrix/eu3_100_0", "rb+");
     // stdin = fopen("../Matrix/triplet_mat", "rb+");
     // stdin = fopen("../Matrix/manual_8x8", "rb+");
 
@@ -241,7 +360,7 @@ int main (void)
     printf("Total vals: %li\n", L_vals);
     printf("full chol CPU Time: %f\n\n", cpu_time_used);
 
-    float t = 1e-4; int p = n;
+    float t = 1e-3; int p = 10;
 
     S = cs_schol (0, A) ;      
     start = clock();        
@@ -253,6 +372,24 @@ int main (void)
     printf("Total vals: %li\n", iL_vals);
     printf("Ratio of vals: %f\n", (float)iL_vals/L_vals);
     printf("ichol(t=%0.3e, p=%d) CPU Time: %f\n", t, p, cpu_time_used);
+
+    // cs identity matrix, use for testing with no preconditioner
+    cs *I = cs_spalloc (n, n, n, 1, 1) ;
+    for (csi i = 0 ; i < n ; i++)
+        cs_entry (I, i, i, 1) ;
+    I = cs_compress (I) ;
+
+    // create b such that solution x = 1
+    double *b = cs_malloc (n, sizeof (double)) ;
+    double *x = cs_malloc (n, sizeof (double)) ;
+    for (csi i = 0 ; i < n ; i++){
+        x[i] = 1;
+        b[i] = 0;
+    } 
+    cs_gaxpy(A, x, b);
+
+    csi max_it = 1000;
+    x = ichol_pcg(A, b, L, 1e-6, max_it);
 
     return (0) ;
 }
