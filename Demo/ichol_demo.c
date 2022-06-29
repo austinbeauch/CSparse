@@ -10,6 +10,26 @@ typedef struct DenseVector
     int index;
 } dvec ;
 
+void red(){
+    printf("\033[1;31m");
+}
+
+void green(){
+    printf("\033[1;32m");
+}
+
+void yellow(){
+    printf("\033[1;33m");
+}
+
+void blue(){
+    printf("\033[1;34m");
+}
+
+void reset(){
+    printf("\033[0m");
+}
+
 void print(double *arr, int num){
     for (int i = 0; i < num; i++) {
         printf("%0.2f ", arr[i]);
@@ -321,7 +341,6 @@ double* ichol_pcg(cs *A, double *b, cs *L, double tol, int max_iter){
     return x;
 }
 
-
 int main (void)
 {
     cs *T, *A, *L;
@@ -333,11 +352,11 @@ int main (void)
     double cpu_time_used;
 
     // stdin = fopen("../Matrix/eu3_2_0", "rb+");
-    stdin = fopen("../Matrix/eu3_10_0", "rb+");
+    // stdin = fopen("../Matrix/eu3_10_0", "rb+");
     // stdin = fopen("../Matrix/eu3_15_0", "rb+");
     // stdin = fopen("../Matrix/eu3_22_0", "rb+");
     // stdin = fopen("../Matrix/eu3_35_0", "rb+");
-    // stdin = fopen("../Matrix/eu3_50_0", "rb+");
+    stdin = fopen("../Matrix/eu3_50_0", "rb+");
     // stdin = fopen("../Matrix/eu3_100_0", "rb+");
     // stdin = fopen("../Matrix/triplet_mat", "rb+");
     // stdin = fopen("../Matrix/manual_8x8", "rb+");
@@ -347,31 +366,9 @@ int main (void)
     // cs_print (A, 0) ; /* print A */
 
     n = A->n ;
+    yellow();
     printf("n = %li\n", n);
-
-    S = cs_schol (0, A) ;               
-    start = clock();
-    N = cs_chol (A, S) ;                    /* numeric Cholesky factorization */
-    // printf ("chol(L):\n") ; cs_print (cs_transpose(N->L, 1), 0) ;
-    end = clock();
-    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
-    // printf ("chol(L):\n") ; cs_print (N->L, 0) ;
-    csi L_vals = N->L->p[n];
-    printf("Total vals: %li\n", L_vals);
-    printf("full chol CPU Time: %f\n\n", cpu_time_used);
-
-    float t = 1e-3; int p = 10;
-
-    S = cs_schol (0, A) ;      
-    start = clock();        
-    L = cs_ichol (A, S, t, p) ;                    
-    end = clock();
-    csi iL_vals = L->p[n];
-    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
-    // printf ("chol(L):\n") ; cs_print (L, 0) ;
-    printf("Total vals: %li\n", iL_vals);
-    printf("Ratio of vals: %f\n", (float)iL_vals/L_vals);
-    printf("ichol(t=%0.3e, p=%d) CPU Time: %f\n", t, p, cpu_time_used);
+    reset();
 
     // cs identity matrix, use for testing with no preconditioner
     cs *I = cs_spalloc (n, n, n, 1, 1) ;
@@ -382,14 +379,63 @@ int main (void)
     // create b such that solution x = 1
     double *b = cs_malloc (n, sizeof (double)) ;
     double *x = cs_malloc (n, sizeof (double)) ;
+    double *sol;
     for (csi i = 0 ; i < n ; i++){
         x[i] = 1;
         b[i] = 0;
     } 
     cs_gaxpy(A, x, b);
 
-    csi max_it = 1000;
-    x = ichol_pcg(A, b, L, 1e-6, max_it);
+    csi max_it = 1000; double tol = 1e-6;
+
+    red();
+    printf("\nSolution with full Cholesky:\n");
+    reset();
+    S = cs_schol (0, A) ;               
+    start = clock();
+    N = cs_chol (A, S) ;                    
+    sol = ichol_pcg(A, b, N->L, tol, max_it);
+    end = clock();
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
+
+    csi L_vals = N->L->p[n];
+    printf("Total vals: %li\n", L_vals);
+    // l2 norm between sol and x
+    printf("full chol + solve CPU Time: ");    
+    green();
+    printf("%f\n", cpu_time_used);
+    reset();  
+
+    red();
+    printf("\nSolution with CG:\n");
+    reset();
+    start = clock();
+    sol = ichol_pcg(A, b, I, tol, max_it);
+    end = clock();
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+    printf("CG CPU solve Time: ");
+    green();
+    printf("%f\n", cpu_time_used);
+    reset();
+
+    float t = 1e-2; int p = 10;
+
+    red();
+    printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, p); 
+    reset();
+    S = cs_schol (0, A) ;      
+    start = clock();        
+    L = cs_ichol (A, S, t, p) ;
+    sol = ichol_pcg(A, b, L, tol, max_it);                    
+    end = clock();
+    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC; 
+    csi iL_vals = L->p[n];
+    
+    printf("Total vals: %li, ratio: %f\n", iL_vals, (float)iL_vals/L_vals);
+    printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, p);
+    green();
+    printf("%f\n", cpu_time_used);
+    reset();
 
     return (0) ;
 }
