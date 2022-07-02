@@ -1,7 +1,9 @@
 #include <time.h>
 #include <stdio.h>
+#include <string.h>
 #include "cs.h"
 
+#define MAX_INT 2147483647
 #define noop
 
 typedef struct DenseVector
@@ -341,35 +343,65 @@ double* ichol_pcg(cs *A, double *b, cs *L, double tol, int max_iter){
     return x;
 }
 
-int main (void)
+int main (int argc, char* argv[])
 {
+
+    // init file 
+    FILE *fp;
+
     cs *T, *A, *L;
     css *S;
     csn *N;
-    csi order, n;
+    csi n;
+
+    float t = 0 ; float tol = 1e-6; 
+    int max_iter = 100; int max_p=-1; 
 
     clock_t start, end;
     double cpu_time_used;
 
-    // stdin = fopen("../Matrix/eu3_2_0", "rb+");
-    // stdin = fopen("../Matrix/eu3_10_0", "rb+");
-    // stdin = fopen("../Matrix/eu3_15_0", "rb+");
-    // stdin = fopen("../Matrix/eu3_22_0", "rb+");
-    // stdin = fopen("../Matrix/eu3_35_0", "rb+");
-    stdin = fopen("../Matrix/eu3_50_0", "rb+");
-    // stdin = fopen("../Matrix/eu3_100_0", "rb+");
-    // stdin = fopen("../Matrix/triplet_mat", "rb+");
-    // stdin = fopen("../Matrix/manual_8x8", "rb+");
+    if (argc < 2) {
+        printf("Usage: ./ichol_demo <matrix_file> [-t threshold] [-p max_row_nonzeros] [-tol tolerance] [-iter max_iterations]\n");
+        return 0;
+    }
 
-    T = cs_load(stdin) ;
-    A = cs_compress (T) ;              
-    // cs_print (A, 0) ; /* print A */
+    fp = fopen(argv[1], "rb+");
+    T = cs_load(fp) ;
+    A = cs_compress (T) ; 
+    
+    if (!A)
+    {
+        printf ("Input matrix is not found.\n") ;
+        return (1) ;
+    }
 
     n = A->n ;
-    yellow();
-    printf("n = %li\n", n);
-    reset();
+    if (n == 0)
+    {
+        printf ("Error: matrix is empty\n") ;
+        return (1) ;
+    }
 
+    for(int i = 1; i<argc; ++i)
+    {   
+        if (strcmp(argv[i], "-t") == 0)
+            t = atof(argv[++i]);
+        
+        else if (strcmp(argv[i], "-p") == 0)
+            max_p = atoi(argv[++i]);
+        
+        else if (strcmp(argv[i], "-tol") == 0)
+            tol = atof(argv[++i]);
+        
+        else if (strcmp(argv[i], "-iter") == 0)
+            max_iter = atoi(argv[++i]);
+    }
+
+    yellow(); printf("n = %li\n", n); reset();
+
+    if (max_p == -1)
+        max_p = n;
+    
     // cs identity matrix, use for testing with no preconditioner
     cs *I = cs_spalloc (n, n, n, 1, 1) ;
     for (csi i = 0 ; i < n ; i++)
@@ -386,15 +418,13 @@ int main (void)
     } 
     cs_gaxpy(A, x, b);
 
-    csi max_it = 1000; double tol = 1e-6;
-
     red();
     printf("\nSolution with full Cholesky:\n");
     reset();
     S = cs_schol (0, A) ;               
     start = clock();
     N = cs_chol (A, S) ;                    
-    sol = ichol_pcg(A, b, N->L, tol, max_it);
+    sol = ichol_pcg(A, b, N->L, tol, max_iter);
     end = clock();
     cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
 
@@ -410,7 +440,7 @@ int main (void)
     printf("\nSolution with CG:\n");
     reset();
     start = clock();
-    sol = ichol_pcg(A, b, I, tol, max_it);
+    sol = ichol_pcg(A, b, I, tol, max_iter);
     end = clock();
     cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
     printf("CG CPU solve Time: ");
@@ -418,21 +448,19 @@ int main (void)
     printf("%f\n", cpu_time_used);
     reset();
 
-    float t = 1e-2; int p = 10;
-
     red();
-    printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, p); 
+    printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, max_p); 
     reset();
     S = cs_schol (0, A) ;      
     start = clock();        
-    L = cs_ichol (A, S, t, p) ;
-    sol = ichol_pcg(A, b, L, tol, max_it);                    
+    L = cs_ichol (A, S, t, max_p);
+    sol = ichol_pcg(A, b, L, tol, max_iter);                    
     end = clock();
     cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC; 
     csi iL_vals = L->p[n];
     
     printf("Total vals: %li, ratio: %f\n", iL_vals, (float)iL_vals/L_vals);
-    printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, p);
+    printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
     green();
     printf("%f\n", cpu_time_used);
     reset();
