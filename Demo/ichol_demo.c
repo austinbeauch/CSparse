@@ -12,6 +12,13 @@ typedef struct DenseVector
     int index;
 } dvec ;
 
+typedef struct PCGReturn
+{
+    double *x;
+    double residual;
+    csi iter;
+} pcg_return;
+
 void red(){
     printf("\033[1;31m");
 }
@@ -261,7 +268,7 @@ csi ltsolve (const cs *L, double *b, double *x)
     return (1) ;
 }
 
-double* ichol_pcg(cs *A, double *b, cs *L, double tol, int max_iter){
+pcg_return ichol_pcg(cs *A, double *b, cs *L, double tol, int max_iter){
 
     double *r, *z, *p, *x, *h, *s, *c, delta=0, delta0=0, delta_new=0, dot=0;
     csi i, k, n;
@@ -287,10 +294,10 @@ double* ichol_pcg(cs *A, double *b, cs *L, double tol, int max_iter){
         r [i] = b [i] - r [i] ;
 
     // compute z0, Mz = r -> z = M^{-1}r -> L^{-T} ( L^{-1} r_{k+1} )
-    // TODO: change solves to output a new vector instead of copy onto dense vector
+    // Lc=r, output on vector c
     lsolve (L, r, c) ;
 
-    // TODO: check if this ltsolve solves as if the matrix was transposed
+    // Lh = c, output on vector h
     ltsolve (L, c, h);
 
     // set delta to the dot product between r and h
@@ -308,7 +315,11 @@ double* ichol_pcg(cs *A, double *b, cs *L, double tol, int max_iter){
         {
             printf("Converged in %ld iterations, residual %0.3e\n", k, delta);
             free(c); free(r); free(z); free(p); free(h); free(s);
-            return x;
+            pcg_return ret;
+            ret.x = x;
+            ret.iter = k;
+            ret.residual = delta;
+            return ret;
         }   
         // zero s
         for (i = 0 ; i < n ; i++) s[i] = 0;
@@ -340,25 +351,35 @@ double* ichol_pcg(cs *A, double *b, cs *L, double tol, int max_iter){
 
     printf("Did not converge in %ld iterations, residual %0.3e\n", k, delta);
     free(c); free(r); free(z); free(p); free(h); free(s);
-    return x;
+
+    // return PCGReturn struct
+    pcg_return ret;
+    ret.x = x;
+    ret.iter = k;
+    ret.residual = delta;
+
+    return ret;
 }
 
 int main (int argc, char* argv[])
 {
 
     // init file 
-    FILE *fp;
+    FILE *fp, *outfile;
+
+    outfile = fopen("chol_out", "wb+");
+    fprintf(outfile, "type,t,p,iters,res,symb_time,flop_time,sol_time,tot_time\n");
 
     cs *T, *A, *L;
     css *S;
     csn *N;
-    csi n;
+    csi n, L_vals, iL_vals;
 
     float t = 0 ; float tol = 1e-6; 
     int max_iter = 100; int max_p=-1; 
 
     clock_t start, end;
-    double cpu_time_used;
+    double tot_cpu_time, cpu_time_used;
 
     if (argc < 2) {
         printf("Usage: ./ichol_demo <matrix_file> [-t threshold] [-p max_row_nonzeros] [-tol tolerance] [-iter max_iterations]\n");
@@ -401,7 +422,7 @@ int main (int argc, char* argv[])
 
     if (max_p == -1)
         max_p = n;
-    
+
     // cs identity matrix, use for testing with no preconditioner
     cs *I = cs_spalloc (n, n, n, 1, 1) ;
     for (csi i = 0 ; i < n ; i++)
@@ -411,59 +432,97 @@ int main (int argc, char* argv[])
     // create b such that solution x = 1
     double *b = cs_malloc (n, sizeof (double)) ;
     double *x = cs_malloc (n, sizeof (double)) ;
-    double *sol;
+    pcg_return ret;
     for (csi i = 0 ; i < n ; i++){
         x[i] = 1;
         b[i] = 0;
     } 
     cs_gaxpy(A, x, b);
 
-    red();
-    printf("\nSolution with full Cholesky:\n");
-    reset();
-    S = cs_schol (0, A) ;               
-    start = clock();
-    N = cs_chol (A, S) ;                    
-    sol = ichol_pcg(A, b, N->L, tol, max_iter);
-    end = clock();
-    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;  
+    double symb_fact, flop_fact, sol_fact, tot_fact=0;
 
-    csi L_vals = N->L->p[n];
-    printf("Total vals: %li\n", L_vals);
-    // l2 norm between sol and x
-    printf("full chol + solve CPU Time: ");    
-    green();
-    printf("%f\n", cpu_time_used);
-    reset();  
+    if (n > 1000)
+    {
+        // int gb = S->cp[n] * 32 / 8 / 1000000000;
+        // printf ("Cholesky error, trying to allocate %d GB\n", gb) ;
+        printf("Skipping full Cholesky factorization\n");
+        fprintf(outfile, "chol,,,,,,,,\n");
+    }
+    else{
+        red();
+        printf("\nSolution with full Cholesky:\n");
+        reset();
+        start = clock();
+        S = cs_schol (0, A) ;               
+        end = clock();
+        symb_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+        tot_fact += symb_fact;
+
+        start = clock();
+        N = cs_chol (A, S) ; 
+        end = clock();
+        flop_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+        tot_fact += flop_fact;
+
+        start = clock();
+        ret = ichol_pcg(A, b, N->L, tol, max_iter);
+        end = clock();
+        sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+        tot_fact += sol_fact;
+
+        L_vals = N->L->p[n];
+        printf("full chol + solve CPU Time: ");    
+        green();
+        printf("%f\n", cpu_time_used);
+        reset(); 
+        fprintf(outfile, "chol,,,%ld,%f,%f,%f,%f,%f\n", ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact);
+    } 
 
     red();
     printf("\nSolution with CG:\n");
     reset();
     start = clock();
-    sol = ichol_pcg(A, b, I, tol, max_iter);
+    ret = ichol_pcg(A, b, I, tol, max_iter);
     end = clock();
     cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
     printf("CG CPU solve Time: ");
     green();
     printf("%f\n", cpu_time_used);
     reset();
+    fprintf(outfile, "cg,,,%ld,%f,,,%f,%f\n", ret.iter, ret.residual, cpu_time_used, cpu_time_used);
 
     red();
     printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, max_p); 
     reset();
+    cpu_time_used = 0;
+    start = clock();     
     S = cs_schol (0, A) ;      
-    start = clock();        
-    L = cs_ichol (A, S, t, max_p);
-    sol = ichol_pcg(A, b, L, tol, max_iter);                    
     end = clock();
-    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC; 
-    csi iL_vals = L->p[n];
-    
-    printf("Total vals: %li, ratio: %f\n", iL_vals, (float)iL_vals/L_vals);
+    symb_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+    tot_cpu_time += symb_fact;
+    printf("Time for symbolic factorization: %f\n", symb_fact);
+
+    start = clock();
+    L = cs_ichol (A, S, t, max_p);
+    end = clock();
+    flop_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+    tot_cpu_time += flop_fact;
+    printf("Time for numeric computation: %f\n", flop_fact);
+
+    start = clock();
+    ret = ichol_pcg(A, b, L, tol, max_iter);                    
+    end = clock();
+    sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
+    tot_cpu_time += sol_fact;
+    printf("Time for solve: %f\n", sol_fact);
     printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
     green();
-    printf("%f\n", cpu_time_used);
+    printf("%f\n", tot_cpu_time);
     reset();
+    fprintf(outfile, "ichol,%0.3e,%d,%ld,%f,%f,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_cpu_time);
+
+    fclose(fp);
+    fclose(outfile);
 
     return (0) ;
 }
