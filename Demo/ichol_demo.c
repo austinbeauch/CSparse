@@ -1,6 +1,7 @@
 #include <time.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h> 
 #include "cs.h"
 
 #define MAX_INT 2147483647
@@ -22,19 +23,15 @@ typedef struct PCGReturn
 void red(){
     printf("\033[1;31m");
 }
-
 void green(){
     printf("\033[1;32m");
 }
-
 void yellow(){
     printf("\033[1;33m");
 }
-
 void blue(){
     printf("\033[1;34m");
 }
-
 void reset(){
     printf("\033[0m");
 }
@@ -65,6 +62,10 @@ void printcs(cs *A, int num){
     print(A->x, num);
     printi(A->i, num);
     printi(A->p, num);
+}
+
+int cmpfunc (const void * a, const void * b) {
+   return ( *(int*)a - *(int*)b );
 }
 
 int compare_values(const void *a, const void *b)
@@ -361,10 +362,172 @@ pcg_return ichol_pcg(cs *A, double *b, cs *L, double tol, int max_iter){
     return ret;
 }
 
-int main (int argc, char* argv[])
+cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
 {
 
-    // init file 
+    double *Lx, *Ax, *d, *r, *a;
+    double L_ij, L_jk, L_ik;
+    bool *b;
+    csi *Li, *Lp, *Ap, *Ai, *s, *t, *l, *c;
+    csi p, i, j, k, n, c_n, k0, k1, k2, nnz;
+    cs *L;
+    n = A->n ;
+
+    c_n = 0;
+    nnz = 0;
+
+    // calloc for s
+    s = cs_calloc (n, sizeof (csi)) ; 
+    t = cs_calloc (n, sizeof (csi)) ;
+    c = cs_calloc (n, sizeof (csi)) ;
+    l = cs_calloc (n, sizeof (csi)) ;
+    a = cs_calloc (n, sizeof (double)) ;
+    r = cs_calloc (n, sizeof (double)) ;
+    d = cs_calloc (n, sizeof (double)) ;
+    b = cs_calloc (n, sizeof (bool)) ;
+
+    for (i = 0 ; i < n ; i++) {
+        s [i] = 0 ;
+        t [i] = 0 ;
+        c [i] = 0 ;
+        l [i] = -1 ;
+        a [i] = 0 ;
+        r [i] = 0 ;
+        d [i] = 0 ;
+        b [i] = false ;
+    }
+
+    Ap = A->p ; Ai = A->i ; Ax = A->x ;
+
+    csi maxvals = (max_p * (max_p+1) / 2) + (max_p * (n-max_p));
+
+    // values * 8 bytes per double, divide by a giga to get gigabytes
+    double gb = maxvals * 8 / 1e9;
+
+    // only allow 2gb of memory to be allocated
+    if (gb > 2)
+    {
+        yellow();
+        printf("Input p results in more than 2GB memory, setting max allocation to 2GB.\n");
+        reset();
+    }
+    csi alloc_vals = gb > 2 ? 2e9/8 : maxvals;
+
+    L = cs_spalloc (n, n, alloc_vals, 1, 0);
+    Lp = L->p ; Li = L->i ; Lx = L->x ;
+    
+    // store diagonals in d, keep track of first sub-diagonal index in t, sum values in column j in r
+    for (j = 0 ; j < n ; j++)
+    {
+        for (p = Ap [j] ; p < Ap [j+1] ; p++)
+        {
+            i = Ai[p];
+            if (i == j)
+            {
+                d[j] += Ax[p];
+                t[j] = p + 1;
+            }
+            if (i >= j)
+            {
+                r[j] += fabs(Ax[p]);
+            }
+        }
+    }
+
+    for (j = 0 ; j < n ; j++)
+    {
+        // for each L_ij on subdiagonal       
+        for (p = t[j] ; p < Ap [j+1] ; p++){
+            i = Ai[p];
+            L_ij = Ax[p];
+            if (L_ij != 0 && i > j)
+            {
+                a[i] = L_ij;
+                if (b[i] == false){
+                    b[i] = true;
+                    c[c_n++] = i;
+                }
+            }
+        }
+
+        k = l[j];
+        while (k != -1)
+        {
+            k0 = s[k];
+            k1 = Lp[k+1];
+            k2 = l[k];
+            L_jk = Lx[k0++];
+            if (k0 < k1){
+                s[k] = k0;
+                i = Li[k0];
+                l[k] = l[i];
+                l[i] = k;
+                for (csi idx = k0; idx < k1; idx++)
+                {
+                    i = Li[idx];
+                    L_ik = Lx[idx];
+                    a[i] -= L_ik * L_jk;
+                    if (b[i] == false){
+                        b[i] = true;
+                        c[c_n++] = i;
+                    }
+                }   
+            }
+            k = k2;
+        }
+
+        if (d[j] <= 0)
+        {
+            yellow();
+            printf("Matrix is not positive definite.\n");
+            reset();
+            return NULL;
+        }
+        
+        d[j] = sqrt(d[j]);
+        Lx[nnz] = d[j];
+        Li[nnz] = j;
+        nnz++;
+        s[j] = nnz;
+
+        // Sort row indices of column j for correct insertion order into L
+        qsort(c, c_n, sizeof(double), cmpfunc);
+
+        for (k = 0 ; k < c_n ; k++)
+        {
+            i = c[k];
+            L_ij = a[i] / d[j];
+            if (true) d[i] -= L_ij * L_ij;
+
+            float rel = relative_thresh * r[j];
+
+            if (fabs(a[i]) > rel)
+            {
+                Lx[nnz] = L_ij;
+                Li[nnz] = i;
+                nnz++;
+            }
+
+            a[i] = 0;
+            b[i] = false;
+        }
+
+        c_n = 0;
+        Lp[j+1] = nnz;
+
+        if (Lp[j] + 1 < Lp[j+1]) // if column j has a nonzero element below the diagonal
+        {
+            i = Li[Lp[j] + 1];
+            l[j] = l[i];
+            l[i] = j;
+        }
+    }
+    return L;
+}
+
+
+int main (int argc, char* argv[])
+{
     FILE *fp, *outfile;
 
     outfile = fopen("chol_out", "wb+");
@@ -375,11 +538,11 @@ int main (int argc, char* argv[])
     csn *N;
     csi n, L_vals, iL_vals;
 
-    float t = 0 ; float tol = 1e-6; 
-    int max_iter = 100; int max_p=-1; 
+    float t = -1; float tol = 1e-6; 
+    int max_iter = 1000; int max_p = -1; 
 
     clock_t start, end;
-    double tot_cpu_time, cpu_time_used;
+    double symb_fact, flop_fact, sol_fact, tot_fact=0;;
 
     if (argc < 2) {
         printf("Usage: ./ichol_demo <matrix_file> [-t threshold] [-p max_row_nonzeros] [-tol tolerance] [-iter max_iterations]\n");
@@ -439,16 +602,16 @@ int main (int argc, char* argv[])
     } 
     cs_gaxpy(A, x, b);
 
-    double symb_fact, flop_fact, sol_fact, tot_fact=0;
-
+    // -------------- FULL CHOLESKY -------------- //
     if (n > 1000)
     {
         // int gb = S->cp[n] * 32 / 8 / 1000000000;
         // printf ("Cholesky error, trying to allocate %d GB\n", gb) ;
         printf("Skipping full Cholesky factorization\n");
-        fprintf(outfile, "chol,,,,,,,,\n");
+        // fprintf(outfile, "chol,,,,,,,,\n");
     }
-    else{
+    else
+    {
         red();
         printf("\nSolution with full Cholesky:\n");
         reset();
@@ -473,54 +636,112 @@ int main (int argc, char* argv[])
         L_vals = N->L->p[n];
         printf("full chol + solve CPU Time: ");    
         green();
-        printf("%f\n", cpu_time_used);
+        printf("%f\n", tot_fact);
         reset(); 
         fprintf(outfile, "chol,,,%ld,%f,%f,%f,%f,%f\n", ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact);
     } 
 
-    red();
-    printf("\nSolution with CG:\n");
-    reset();
-    start = clock();
-    ret = ichol_pcg(A, b, I, tol, max_iter);
-    end = clock();
-    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
-    printf("CG CPU solve Time: ");
-    green();
-    printf("%f\n", cpu_time_used);
-    reset();
-    fprintf(outfile, "cg,,,%ld,%f,,,%f,%f\n", ret.iter, ret.residual, cpu_time_used, cpu_time_used);
+    // -------------- CG -------------- //
+    // if not t, don't precondition
+    if (t == -1)
+    {
+        tot_fact = 0;
+        red();
+        printf("\nSolution with CG:\n");
+        reset();
+        start = clock();
+        ret = ichol_pcg(A, b, I, tol, max_iter);
+        end = clock();
+        tot_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+        printf("CG CPU solve Time: ");
+        green();
+        printf("%f\n", tot_fact);
+        reset();
+        fprintf(outfile, "cg,,,%ld,%0.3e,,,%f,%f\n", ret.iter, ret.residual, tot_fact, tot_fact);
+    }
 
-    red();
-    printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, max_p); 
-    reset();
-    cpu_time_used = 0;
-    start = clock();     
-    S = cs_schol (0, A) ;      
-    end = clock();
-    symb_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
-    tot_cpu_time += symb_fact;
-    printf("Time for symbolic factorization: %f\n", symb_fact);
+    // -------------- ICHOL -------------- //
+    else
+    {
+        if (n < 100000)
+        {
+            // -------------- BAD -------------- //
+            tot_fact = 0;
+            red();
+            printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, max_p); 
+            reset();
+            start = clock();     
+            S = cs_schol (0, A) ;      
+            end = clock();
+            symb_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+            tot_fact += symb_fact;
+            double gb = S->cp[n] * 64 / 8 / 1000000000;
+            printf ("Full Cholesky would have %ld nnz, or %0.2f GB\n", S->cp[n], gb) ;
+            printf("Time for symbolic factorization: %f\n", symb_fact);
 
-    start = clock();
-    L = cs_ichol (A, S, t, max_p);
-    end = clock();
-    flop_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
-    tot_cpu_time += flop_fact;
-    printf("Time for numeric computation: %f\n", flop_fact);
+            start = clock();
+            L = cs_ichol (A, S, t, max_p);
+            end = clock();
+            flop_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+            tot_fact += flop_fact;
+            printf("Time for numeric computation: %f\n", flop_fact);
+            printf("Nonzeros in L: %ld\n", L->p[n]);
 
-    start = clock();
-    ret = ichol_pcg(A, b, L, tol, max_iter);                    
-    end = clock();
-    sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
-    tot_cpu_time += sol_fact;
-    printf("Time for solve: %f\n", sol_fact);
-    printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
-    green();
-    printf("%f\n", tot_cpu_time);
-    reset();
-    fprintf(outfile, "ichol,%0.3e,%d,%ld,%f,%f,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_cpu_time);
+            start = clock();
+            ret = ichol_pcg(A, b, L, tol, max_iter);                    
+            end = clock();
+            sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
+            tot_fact += sol_fact;
+            printf("Time for solve: %f\n", sol_fact);
+            printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
+            green();
+            printf("%f\n", tot_fact);
+            reset();
+            fprintf(outfile, "ichol,%0.3e,%d,%ld,%0.3e,%f,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact);
 
+        }
+        else {
+            printf("Skipping bad ichol because n = %ld > 100000\n", n);
+        }
+
+        // -------------- JONES -------------- //
+        tot_fact = 0;
+        red();
+        printf("\nSolution with PCG, jones(t=%0.1e, p=%d):\n", t, max_p); 
+        reset();
+        start = clock();  
+        L = jones_ichol(A, t, max_p);
+        end = clock();
+        flop_fact = (double)(end - start) / CLOCKS_PER_SEC;
+        tot_fact += flop_fact;
+        printf("Time for Jones factorization: %f\n", flop_fact);
+        printf("Nonzeros in L: %ld\n", L->p[n]);
+
+        start = clock();
+        ret = ichol_pcg(A, b, L, tol, max_iter);                    
+        end = clock();
+        sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
+        tot_fact += sol_fact;
+        printf("Time for solve: %f\n", sol_fact);
+        printf("jones ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
+        green();
+        printf("%f\n", tot_fact);
+        reset();
+        fprintf(outfile, "jones,%0.3e,%d,%ld,%0.3e,,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
+
+
+        //write the L matrix to a file
+        // FILE *L_file = fopen("L.txt", "w");
+        // for (csi i = 0; i < n; i++)
+        // {
+        //     for (csi j = L->p[i]; j < L->p[i+1]; j++)
+        //     {
+        //         fprintf(L_file, "%0.3e ", L->x[j]);
+        //     }
+        // }
+        // fclose(L_file);
+    }
+    
     fclose(fp);
     fclose(outfile);
 
