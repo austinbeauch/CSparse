@@ -54,6 +54,7 @@ dkms.conf
 gmon.out
 Demo/ichol_demo
 Matrix/eu3_100_0
+Matrix/eu3_*
 cs_demo1
 cs_demo2
 cs_demo3
