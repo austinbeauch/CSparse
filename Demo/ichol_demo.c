@@ -64,6 +64,14 @@ void printcs(cs *A, int num){
     printi(A->p, num);
 }
 
+//print boolean array
+void printb(bool *arr, int num){
+    for (int i = 0; i < num; i++) {
+        printf("%d ", arr[i]);
+    }
+    printf("\n");
+}
+
 int cmpfunc (const void * a, const void * b) {
    return ( *(int*)a - *(int*)b );
 }
@@ -386,6 +394,9 @@ cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
     d = cs_calloc (n, sizeof (double)) ;
     b = cs_calloc (n, sizeof (bool)) ;
 
+    dvec *x_vec = (dvec*)malloc(n*sizeof(dvec));
+    dvec *from_a = (dvec*)malloc(n*sizeof(dvec));
+
     for (i = 0 ; i < n ; i++) {
         s [i] = 0 ;
         t [i] = 0 ;
@@ -395,11 +406,18 @@ cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
         r [i] = 0 ;
         d [i] = 0 ;
         b [i] = false ;
+        x_vec[i].data = 0;
+        x_vec[i].index = i;
+        from_a[i].data = 0;
+        from_a[i].index = 0;
     }
 
     Ap = A->p ; Ai = A->i ; Ax = A->x ;
 
-    csi maxvals = (max_p * (max_p+1) / 2) + (max_p * (n-max_p));
+    // csi maxvals = (max_p * (max_p+1) / 2) + (max_p * (n-max_p));
+
+    //             tril(A)         max_p extra  diag
+    csi maxvals = (Ap[n] - n) / 2 + n * max_p + n;
 
     // values * 8 bytes per double, divide by a giga to get gigabytes
     double gb = maxvals * 8 / 1e9;
@@ -415,6 +433,7 @@ cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
 
     L = cs_spalloc (n, n, alloc_vals, 1, 0);
     Lp = L->p ; Li = L->i ; Lx = L->x ;
+    Lp[0] = 0;
     
     // store diagonals in d, keep track of first sub-diagonal index in t, sum values in column j in r
     for (j = 0 ; j < n ; j++)
@@ -436,6 +455,7 @@ cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
 
     for (j = 0 ; j < n ; j++)
     {
+        
         // for each L_ij on subdiagonal       
         for (p = t[j] ; p < Ap [j+1] ; p++){
             i = Ai[p];
@@ -490,26 +510,70 @@ cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
         nnz++;
         s[j] = nnz;
 
-        // Sort row indices of column j for correct insertion order into L
-        qsort(c, c_n, sizeof(double), cmpfunc);
-
-        for (k = 0 ; k < c_n ; k++)
+        // ----- Keep an extra p elements on top of a_ij != 0
+        // copy a and c into x_vec
+        for (i = 0; i < c_n; i++)
         {
-            i = c[k];
-            L_ij = a[i] / d[j];
+            x_vec[c[i]].data = a[c[i]];
+            x_vec[c[i]].index = c[i];
+        }
+
+        csi n_fill = c_n;
+        csi a_count = 0;
+        // get elements where a is nonzero
+        for (p = t [j] ; p < Ap [j+1]; p++){
+            i = Ai[p];
+            from_a[a_count].data = a[i]; // store in from_a
+            from_a[a_count++].index = i;
+
+            a[i] = 0;
+            b[i] = false;
+
+            x_vec[i].data = 0; // remove it from x_vec
+            n_fill--;
+        }
+
+        // keep an extra p elements
+        int keep_vals = max_p; 
+        
+        int kept = n_fill < keep_vals ? n_fill : keep_vals;
+        kept += a_count;
+        
+        // sort values if we have more than allowed to keep
+        if (n_fill >= keep_vals){
+            qsort(x_vec, n, sizeof(dvec), compare_values);
+
+            // put them back into from_a
+            for (i = 0; i < keep_vals; i++){
+                from_a[a_count].data = x_vec[i].data;
+                from_a[a_count++].index = x_vec[i].index;
+
+                a[x_vec[i].index] = 0;
+                b[x_vec[i].index] = false;
+
+                x_vec[i].data = 0;
+                x_vec[i].index = i;
+            }
+        }
+        
+        // Sort row indices of column j for correct insertion order into L
+        qsort(from_a, a_count, sizeof(dvec), compare_indices);
+
+        for (k = 0 ; k < kept ; k++)
+        {
+            i = from_a[k].index;
+            L_ij = from_a[k].data / d[j];
             if (true) d[i] -= L_ij * L_ij;
-
-            float rel = relative_thresh * r[j];
-
-            if (fabs(a[i]) > rel)
+            // float rel = relative_thresh * r[j];
+            if (fabs(L_ij) > relative_thresh)
             {
                 Lx[nnz] = L_ij;
                 Li[nnz] = i;
                 nnz++;
             }
 
-            a[i] = 0;
-            b[i] = false;
+            from_a[k].index = k;
+            from_a[k].data = 0;
         }
 
         c_n = 0;
@@ -517,9 +581,9 @@ cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
 
         if (Lp[j] + 1 < Lp[j+1]) // if column j has a nonzero element below the diagonal
         {
-            i = Li[Lp[j] + 1];
-            l[j] = l[i];
-            l[i] = j;
+            i = Li[Lp[j] + 1]; // Row index of first off-diagonal non-zero element
+            l[j] = l[i];       // Remember old list i index in list j
+            l[i] = j;          // Insert index of non-zero element into list i
         }
     }
     return L;
@@ -583,9 +647,6 @@ int main (int argc, char* argv[])
 
     yellow(); printf("n = %li\n", n); reset();
 
-    if (max_p == -1)
-        max_p = n;
-
     // cs identity matrix, use for testing with no preconditioner
     cs *I = cs_spalloc (n, n, n, 1, 1) ;
     for (csi i = 0 ; i < n ; i++)
@@ -643,11 +704,11 @@ int main (int argc, char* argv[])
 
     // -------------- CG -------------- //
     // if not t, don't precondition
-    if (t == -1)
+    if (t == -1 && max_p == -1)
     {
         tot_fact = 0;
         red();
-        printf("\nSolution with CG:\n");
+        printf("\nSolution with CG (no preconditioning):\n");
         reset();
         start = clock();
         ret = ichol_pcg(A, b, I, tol, max_iter);
@@ -663,46 +724,52 @@ int main (int argc, char* argv[])
     // -------------- ICHOL -------------- //
     else
     {
-        if (n < 100000)
-        {
-            // -------------- BAD -------------- //
-            tot_fact = 0;
-            red();
-            printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, max_p); 
-            reset();
-            start = clock();     
-            S = cs_schol (0, A) ;      
-            end = clock();
-            symb_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
-            tot_fact += symb_fact;
-            double gb = S->cp[n] * 64 / 8 / 1000000000;
-            printf ("Full Cholesky would have %ld nnz, or %0.2f GB\n", S->cp[n], gb) ;
-            printf("Time for symbolic factorization: %f\n", symb_fact);
+        if (max_p == -1)
+            max_p = n;
 
-            start = clock();
-            L = cs_ichol (A, S, t, max_p);
-            end = clock();
-            flop_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
-            tot_fact += flop_fact;
-            printf("Time for numeric computation: %f\n", flop_fact);
-            printf("Nonzeros in L: %ld\n", L->p[n]);
+        if (t == -1)
+            t = 0;
+        
+        // if (n < 100000)
+        // {
+        //     // -------------- BAD -------------- //
+        //     tot_fact = 0;
+        //     red();
+        //     printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, max_p); 
+        //     reset();
+        //     start = clock();     
+        //     S = cs_schol (0, A) ;      
+        //     end = clock();
+        //     symb_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+        //     tot_fact += symb_fact;
+        //     double gb = S->cp[n] * 64 / 8 / 1000000000;
+        //     printf ("Full Cholesky would have %ld nnz, or %0.2f GB\n", S->cp[n], gb) ;
+        //     printf("Time for symbolic factorization: %f\n", symb_fact);
 
-            start = clock();
-            ret = ichol_pcg(A, b, L, tol, max_iter);                    
-            end = clock();
-            sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
-            tot_fact += sol_fact;
-            printf("Time for solve: %f\n", sol_fact);
-            printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
-            green();
-            printf("%f\n", tot_fact);
-            reset();
-            fprintf(outfile, "ichol,%0.3e,%d,%ld,%0.3e,%f,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact);
+        //     start = clock();
+        //     L = cs_ichol (A, S, t, max_p);
+        //     end = clock();
+        //     flop_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+        //     tot_fact += flop_fact;
+        //     printf("Time for numeric computation: %f\n", flop_fact);
+        //     printf("Nonzeros in L: %ld\n", L->p[n]);
 
-        }
-        else {
-            printf("Skipping bad ichol because n = %ld > 100000\n", n);
-        }
+        //     start = clock();
+        //     ret = ichol_pcg(A, b, L, tol, max_iter);                    
+        //     end = clock();
+        //     sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
+        //     tot_fact += sol_fact;
+        //     printf("Time for solve: %f\n", sol_fact);
+        //     printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
+        //     green();
+        //     printf("%f\n", tot_fact);
+        //     reset();
+        //     fprintf(outfile, "ichol,%0.3e,%d,%ld,%0.3e,%f,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact);
+
+        // }
+        // else {
+        //     printf("Skipping bad ichol because n = %ld > 100000\n", n);
+        // }
 
         // -------------- JONES -------------- //
         tot_fact = 0;
@@ -728,8 +795,7 @@ int main (int argc, char* argv[])
         printf("%f\n", tot_fact);
         reset();
         fprintf(outfile, "jones,%0.3e,%d,%ld,%0.3e,,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
-
-
+        // cs_print(L, 0);
         //write the L matrix to a file
         // FILE *L_file = fopen("L.txt", "w");
         // for (csi i = 0; i < n; i++)
