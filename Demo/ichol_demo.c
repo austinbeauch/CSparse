@@ -693,36 +693,23 @@ cs *jones_icholtp(const cs *A, float relative_thresh, csi max_p)
             // sort values if we have more than allowed to keep
             if (n_fill >= keep_vals){
                 qsort(x_vec, n, sizeof(dvec), compare_values);
+            } 
 
-                // put them back into from_a
-                for (i = 0; i < n; i++)
-                {
-                    if (i < keep_vals){
-                        from_a[a_count].data = x_vec[i].data;
-                        from_a[a_count++].index = x_vec[i].index;
-                    }
-
-                    a[x_vec[i].index] = 0;
-                    b[x_vec[i].index] = false;
-
-                    x_vec[i].data = 0;
-                    x_vec[i].index = i;
+            // move fill back into from_a
+            for (i = 0; i < n; i++)
+            {
+                if (i < keep_vals && fabs(x_vec[i].data) > 0){
+                    from_a[a_count].data = x_vec[i].data;
+                    from_a[a_count++].index = x_vec[i].index;
                 }
 
-            } else {
-                for (i = 0; i < n; i++){
-                    if (fabs(x_vec[i].data) > 0 ){
-                        from_a[a_count].data = x_vec[i].data;
-                        from_a[a_count++].index = x_vec[i].index;
+                a[x_vec[i].index] = 0;
+                b[x_vec[i].index] = false;
 
-                        a[x_vec[i].index] = 0;
-                        b[x_vec[i].index] = false;
-
-                        x_vec[i].data = 0;
-                        x_vec[i].index = i;
-                    }
-                }
+                x_vec[i].data = 0;
+                x_vec[i].index = i;
             }
+
         }
         
         // Sort row indices of column j for correct insertion order into L
@@ -913,7 +900,6 @@ int main (int argc, char* argv[])
         printf("%f\n", tot_fact);
         reset();
         fprintf(outfile, "jones,%0.3e,,%ld,%0.3e,,%f,%f,%f\n", t, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
-        cs_print(L, 0);
     }
     
     else if (max_p != -1)
@@ -925,46 +911,46 @@ int main (int argc, char* argv[])
         if (t == -1)
             t = 0;
         
-        // if (n < 100000)
-        // {
-        //     // -------------- BAD -------------- //
-        //     tot_fact = 0;
-        //     red();
-        //     printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, max_p); 
-        //     reset();
-        //     start = clock();     
-        //     S = cs_schol (0, A) ;      
-        //     end = clock();
-        //     symb_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
-        //     tot_fact += symb_fact;
-        //     double gb = S->cp[n] * 64 / 8 / 1000000000;
-        //     printf ("Full Cholesky would have %ld nnz, or %0.2f GB\n", S->cp[n], gb) ;
-        //     printf("Time for symbolic factorization: %f\n", symb_fact);
+        if (n < 100000)
+        {
+            // -------------- BAD -------------- //
+            tot_fact = 0;
+            red();
+            printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, max_p); 
+            reset();
+            start = clock();     
+            S = cs_schol (0, A) ;      
+            end = clock();
+            symb_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+            tot_fact += symb_fact;
+            double gb = S->cp[n] * 64 / 8 / 1000000000;
+            printf ("Full Cholesky would have %ld nnz, or %0.2f GB\n", S->cp[n], gb) ;
+            printf("Time for symbolic factorization: %f\n", symb_fact);
 
-        //     start = clock();
-        //     L = cs_ichol (A, S, t, max_p);
-        //     end = clock();
-        //     flop_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
-        //     tot_fact += flop_fact;
-        //     printf("Time for numeric computation: %f\n", flop_fact);
-        //     printf("Nonzeros in L: %ld\n", L->p[n]);
+            start = clock();
+            L = cs_ichol (A, S, t, max_p);
+            end = clock();
+            flop_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
+            tot_fact += flop_fact;
+            printf("Time for numeric computation: %f\n", flop_fact);
+            printf("Nonzeros in L: %ld\n", L->p[n]);
 
-        //     start = clock();
-        //     ret = ichol_pcg(A, b, L, tol, max_iter);                    
-        //     end = clock();
-        //     sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
-        //     tot_fact += sol_fact;
-        //     printf("Time for solve: %f\n", sol_fact);
-        //     printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
-        //     green();
-        //     printf("%f\n", tot_fact);
-        //     reset();
-        //     fprintf(outfile, "ichol,%0.3e,%d,%ld,%0.3e,%f,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact);
+            start = clock();
+            ret = ichol_pcg(A, b, L, tol, max_iter);                    
+            end = clock();
+            sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
+            tot_fact += sol_fact;
+            printf("Time for solve: %f\n", sol_fact);
+            printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
+            green();
+            printf("%f\n", tot_fact);
+            reset();
+            fprintf(outfile, "ichol,%0.3e,%d,%ld,%0.3e,%f,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact);
 
-        // }
-        // else {
-        //     printf("Skipping bad ichol because n = %ld > 100000\n", n);
-        // }
+        }
+        else {
+            printf("Skipping bad ichol because n = %ld > 100000\n", n);
+        }
 
 
         // -------------- MODIFIED JONES -------------- //
@@ -991,7 +977,7 @@ int main (int argc, char* argv[])
         printf("%f\n", tot_fact);
         reset();
         fprintf(outfile, "jones_tp,%0.3e,%d,%ld,%0.3e,,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
-        cs_print(L, 0);
+
         //write the L matrix to a file
         // FILE *L_file = fopen("L.txt", "w");
         // for (csi i = 0; i < n; i++)
