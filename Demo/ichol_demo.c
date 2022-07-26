@@ -370,7 +370,158 @@ pcg_return ichol_pcg(cs *A, double *b, cs *L, double tol, int max_iter){
     return ret;
 }
 
-cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
+cs *jones_ichol (const cs *A, float relative_thresh)
+{
+
+    double *Lx, *Ax, *d, *r, *a;
+    double L_ij, L_jk, L_ik;
+    bool *b;
+    csi *Li, *Lp, *Ap, *Ai, *s, *t, *l, *c;
+    csi p, i, j, k, n, c_n, k0, k1, k2, nnz;
+    cs *L;
+    n = A->n ;
+
+    c_n = 0;
+    nnz = 0;
+
+    // calloc for s
+    s = cs_calloc (n, sizeof (csi)) ; 
+    t = cs_calloc (n, sizeof (csi)) ;
+    c = cs_calloc (n, sizeof (csi)) ;
+    l = cs_calloc (n, sizeof (csi)) ;
+    a = cs_calloc (n, sizeof (double)) ;
+    r = cs_calloc (n, sizeof (double)) ;
+    d = cs_calloc (n, sizeof (double)) ;
+    b = cs_calloc (n, sizeof (bool)) ;
+
+    for (i = 0 ; i < n ; i++) {
+        s [i] = 0 ;
+        t [i] = 0 ;
+        c [i] = 0 ;
+        l [i] = -1 ;
+        a [i] = 0 ;
+        r [i] = 0 ;
+        d [i] = 0 ;
+        b [i] = false ;
+    }
+
+    Ap = A->p ; Ai = A->i ; Ax = A->x ;
+
+    csi alloc_vals = 2e9/8; // set max allocation to 2GB
+    L = cs_spalloc (n, n, alloc_vals, 1, 0);
+    Lp = L->p ; Li = L->i ; Lx = L->x ;
+    
+    // store diagonals in d, keep track of first sub-diagonal index in t, sum values in column j in r
+    for (j = 0 ; j < n ; j++)
+    {
+        for (p = Ap [j] ; p < Ap [j+1] ; p++)
+        {
+            i = Ai[p];
+            if (i == j)
+            {
+                d[j] += Ax[p];
+                t[j] = p + 1;
+            }
+            if (i >= j)
+            {
+                r[j] += fabs(Ax[p]);
+            }
+        }
+    }
+
+    for (j = 0 ; j < n ; j++)
+    {
+        // for each L_ij on subdiagonal       
+        for (p = t[j] ; p < Ap [j+1] ; p++){
+            i = Ai[p];
+            L_ij = Ax[p];
+            if (L_ij != 0 && i > j)
+            {
+                a[i] = L_ij;
+                if (b[i] == false){
+                    b[i] = true;
+                    c[c_n++] = i;
+                }
+            }
+        }
+
+        k = l[j];
+        while (k != -1)
+        {
+            k0 = s[k];
+            k1 = Lp[k+1];
+            k2 = l[k];
+            L_jk = Lx[k0++];
+            if (k0 < k1){
+                s[k] = k0;
+                i = Li[k0];
+                l[k] = l[i];
+                l[i] = k;
+                for (csi idx = k0; idx < k1; idx++)
+                {
+                    i = Li[idx];
+                    L_ik = Lx[idx];
+                    a[i] -= L_ik * L_jk;
+                    if (b[i] == false){
+                        b[i] = true;
+                        c[c_n++] = i;
+                    }
+                }   
+            }
+            k = k2;
+        }
+
+        if (d[j] <= 0)
+        {
+            yellow();
+            printf("Matrix is not positive definite.\n");
+            reset();
+            return NULL;
+        }
+        
+        d[j] = sqrt(d[j]);
+        Lx[nnz] = d[j];
+        Li[nnz] = j;
+        nnz++;
+        s[j] = nnz;
+
+        // Sort row indices of column j for correct insertion order into L
+        qsort(c, c_n, sizeof(double), cmpfunc);
+
+        for (k = 0 ; k < c_n ; k++)
+        {
+            i = c[k];
+            L_ij = a[i] / d[j];
+            if (true) d[i] -= L_ij * L_ij;
+
+            float rel = relative_thresh * r[j];
+
+            // if (fabs(a[i]) > rel)
+            if (fabs(L_ij) > relative_thresh)
+            {
+                Lx[nnz] = L_ij;
+                Li[nnz] = i;
+                nnz++;
+            }
+
+            a[i] = 0;
+            b[i] = false;
+        }
+
+        c_n = 0;
+        Lp[j+1] = nnz;
+
+        if (Lp[j] + 1 < Lp[j+1]) // if column j has a nonzero element below the diagonal
+        {
+            i = Li[Lp[j] + 1];
+            l[j] = l[i];
+            l[i] = j;
+        }
+    }
+    return L;
+}
+
+cs *jones_icholtp(const cs *A, float relative_thresh, csi max_p)
 {
 
     double *Lx, *Ax, *d, *r, *a;
@@ -455,7 +606,6 @@ cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
 
     for (j = 0 ; j < n ; j++)
     {
-        
         // for each L_ij on subdiagonal       
         for (p = t[j] ; p < Ap [j+1] ; p++){
             i = Ai[p];
@@ -539,20 +689,39 @@ cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
         int kept = n_fill < keep_vals ? n_fill : keep_vals;
         kept += a_count;
         
-        // sort values if we have more than allowed to keep
-        if (n_fill >= keep_vals){
-            qsort(x_vec, n, sizeof(dvec), compare_values);
+        if (n_fill > 0){
+            // sort values if we have more than allowed to keep
+            if (n_fill >= keep_vals){
+                qsort(x_vec, n, sizeof(dvec), compare_values);
 
-            // put them back into from_a
-            for (i = 0; i < keep_vals; i++){
-                from_a[a_count].data = x_vec[i].data;
-                from_a[a_count++].index = x_vec[i].index;
+                // put them back into from_a
+                for (i = 0; i < n; i++)
+                {
+                    if (i < keep_vals){
+                        from_a[a_count].data = x_vec[i].data;
+                        from_a[a_count++].index = x_vec[i].index;
+                    }
 
-                a[x_vec[i].index] = 0;
-                b[x_vec[i].index] = false;
+                    a[x_vec[i].index] = 0;
+                    b[x_vec[i].index] = false;
 
-                x_vec[i].data = 0;
-                x_vec[i].index = i;
+                    x_vec[i].data = 0;
+                    x_vec[i].index = i;
+                }
+
+            } else {
+                for (i = 0; i < n; i++){
+                    if (fabs(x_vec[i].data) > 0 ){
+                        from_a[a_count].data = x_vec[i].data;
+                        from_a[a_count++].index = x_vec[i].index;
+
+                        a[x_vec[i].index] = 0;
+                        b[x_vec[i].index] = false;
+
+                        x_vec[i].data = 0;
+                        x_vec[i].index = i;
+                    }
+                }
             }
         }
         
@@ -571,9 +740,6 @@ cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
                 Li[nnz] = i;
                 nnz++;
             }
-
-            from_a[k].index = k;
-            from_a[k].data = 0;
         }
 
         c_n = 0;
@@ -588,7 +754,6 @@ cs *jones_ichol (const cs *A, float relative_thresh, csi max_p)
     }
     return L;
 }
-
 
 int main (int argc, char* argv[])
 {
@@ -722,7 +887,37 @@ int main (int argc, char* argv[])
     }
 
     // -------------- ICHOL -------------- //
-    else
+    if (t != -1 && max_p == -1)
+    {
+        // -------------- JONES -------------- //
+        tot_fact = 0;
+        red();
+        printf("\nSolution with PCG, jones(t=%0.1e):\n", t); 
+        reset();
+        start = clock();  
+        L = jones_ichol(A, t);
+        end = clock();
+        flop_fact = (double)(end - start) / CLOCKS_PER_SEC;
+        tot_fact += flop_fact;
+        printf("Time for Jones factorization: %f\n", flop_fact);
+        printf("Nonzeros in L: %ld\n", L->p[n]);
+
+        start = clock();
+        ret = ichol_pcg(A, b, L, tol, max_iter);                    
+        end = clock();
+        sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
+        tot_fact += sol_fact;
+        printf("Time for solve: %f\n", sol_fact);
+        printf("jones ichol(t=%0.3e) + solve CPU Time: ", t);
+        green();
+        printf("%f\n", tot_fact);
+        reset();
+        fprintf(outfile, "jones,%0.3e,,%ld,%0.3e,,%f,%f,%f\n", t, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
+        cs_print(L, 0);
+    }
+    
+    else if (max_p != -1)
+
     {
         if (max_p == -1)
             max_p = n;
@@ -771,13 +966,14 @@ int main (int argc, char* argv[])
         //     printf("Skipping bad ichol because n = %ld > 100000\n", n);
         // }
 
-        // -------------- JONES -------------- //
+
+        // -------------- MODIFIED JONES -------------- //
         tot_fact = 0;
         red();
-        printf("\nSolution with PCG, jones(t=%0.1e, p=%d):\n", t, max_p); 
+        printf("\nSolution with PCG, modified jones(t=%0.1e, p=%d):\n", t, max_p); 
         reset();
         start = clock();  
-        L = jones_ichol(A, t, max_p);
+        L = jones_icholtp(A, t, max_p);
         end = clock();
         flop_fact = (double)(end - start) / CLOCKS_PER_SEC;
         tot_fact += flop_fact;
@@ -790,12 +986,12 @@ int main (int argc, char* argv[])
         sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
         tot_fact += sol_fact;
         printf("Time for solve: %f\n", sol_fact);
-        printf("jones ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
+        printf("modified jones ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
         green();
         printf("%f\n", tot_fact);
         reset();
-        fprintf(outfile, "jones,%0.3e,%d,%ld,%0.3e,,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
-        // cs_print(L, 0);
+        fprintf(outfile, "jones_tp,%0.3e,%d,%ld,%0.3e,,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
+        cs_print(L, 0);
         //write the L matrix to a file
         // FILE *L_file = fopen("L.txt", "w");
         // for (csi i = 0; i < n; i++)
