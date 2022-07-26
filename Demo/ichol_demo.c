@@ -661,11 +661,11 @@ cs *jones_icholtp(const cs *A, float relative_thresh, csi max_p)
         s[j] = nnz;
 
         // ----- Keep an extra p elements on top of a_ij != 0
-        // copy a and c into x_vec
+        // copy a and c into the front of x_vec
         for (i = 0; i < c_n; i++)
         {
-            x_vec[c[i]].data = a[c[i]];
-            x_vec[c[i]].index = c[i];
+            x_vec[i].data = a[c[i]];
+            x_vec[i].index = c[i];
         }
 
         csi n_fill = c_n;
@@ -673,30 +673,29 @@ cs *jones_icholtp(const cs *A, float relative_thresh, csi max_p)
         // get elements where a is nonzero
         for (p = t [j] ; p < Ap [j+1]; p++){
             i = Ai[p];
+            x_vec[a_count].data = 0; // remove it from x_vec
             from_a[a_count].data = a[i]; // store in from_a
             from_a[a_count++].index = i;
 
             a[i] = 0;
             b[i] = false;
-
-            x_vec[i].data = 0; // remove it from x_vec
+            
             n_fill--;
         }
 
         // keep an extra p elements
         int keep_vals = max_p; 
-        
         int kept = n_fill < keep_vals ? n_fill : keep_vals;
         kept += a_count;
         
         if (n_fill > 0){
             // sort values if we have more than allowed to keep
             if (n_fill >= keep_vals){
-                qsort(x_vec, n, sizeof(dvec), compare_values);
+                qsort(x_vec, c_n, sizeof(dvec), compare_values);
             } 
 
             // move fill back into from_a
-            for (i = 0; i < n; i++)
+            for (i = 0; i < c_n; i++)
             {
                 if (i < keep_vals && fabs(x_vec[i].data) > 0){
                     from_a[a_count].data = x_vec[i].data;
@@ -709,7 +708,6 @@ cs *jones_icholtp(const cs *A, float relative_thresh, csi max_p)
                 x_vec[i].data = 0;
                 x_vec[i].index = i;
             }
-
         }
         
         // Sort row indices of column j for correct insertion order into L
@@ -900,6 +898,7 @@ int main (int argc, char* argv[])
         printf("%f\n", tot_fact);
         reset();
         fprintf(outfile, "jones,%0.3e,,%ld,%0.3e,,%f,%f,%f\n", t, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
+        // cs_print(L, 0);
     }
     
     else if (max_p != -1)
@@ -952,7 +951,6 @@ int main (int argc, char* argv[])
             printf("Skipping bad ichol because n = %ld > 100000\n", n);
         }
 
-
         // -------------- MODIFIED JONES -------------- //
         tot_fact = 0;
         red();
@@ -977,7 +975,7 @@ int main (int argc, char* argv[])
         printf("%f\n", tot_fact);
         reset();
         fprintf(outfile, "jones_tp,%0.3e,%d,%ld,%0.3e,,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
-
+        // cs_print(L, 0);
         //write the L matrix to a file
         // FILE *L_file = fopen("L.txt", "w");
         // for (csi i = 0; i < n; i++)
