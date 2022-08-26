@@ -535,6 +535,10 @@ cs *jones_icholtp(const cs *A, float relative_thresh, csi max_p)
     c_n = 0;
     nnz = 0;
 
+    if (max_p == 0)
+        relative_thresh = 0; // ichol(0) whenever p = 0
+    
+
     // calloc for s
     s = cs_calloc (n, sizeof (csi)) ; 
     t = cs_calloc (n, sizeof (csi)) ;
@@ -569,7 +573,7 @@ cs *jones_icholtp(const cs *A, float relative_thresh, csi max_p)
 
     //             tril(A)         max_p extra  diag
     csi maxvals = (Ap[n] - n) / 2 + n * max_p + n;
-
+    printf("Max values in A: %ld, additional values: %ld, total: %ld\n", (Ap[n] - n) / 2, n * max_p + n, maxvals ) ;
     // values * 8 bytes per double, divide by a giga to get gigabytes
     double gb = maxvals * 8 / 1e9;
 
@@ -670,6 +674,7 @@ cs *jones_icholtp(const cs *A, float relative_thresh, csi max_p)
 
         csi n_fill = c_n;
         csi a_count = 0;
+
         // get elements where a is nonzero
         for (p = t [j] ; p < Ap [j+1]; p++){
             i = Ai[p];
@@ -687,7 +692,7 @@ cs *jones_icholtp(const cs *A, float relative_thresh, csi max_p)
         int keep_vals = max_p; 
         int kept = n_fill < keep_vals ? n_fill : keep_vals;
         kept += a_count;
-        
+
         if (n_fill > 0){
             // sort values if we have more than allowed to keep
             if (n_fill >= keep_vals){
@@ -744,8 +749,8 @@ int main (int argc, char* argv[])
 {
     FILE *fp, *outfile;
 
-    outfile = fopen("chol_out", "wb+");
-    fprintf(outfile, "type,t,p,iters,res,symb_time,flop_time,sol_time,tot_time\n");
+    outfile = fopen("/tmp/chol_out", "wb+");
+    fprintf(outfile, "type,t,p,iters,res,symb_time,flop_time,sol_time,tot_time,nnz\n");
 
     cs *T, *A, *L;
     css *S;
@@ -756,7 +761,9 @@ int main (int argc, char* argv[])
     int max_iter = 1000; int max_p = -1; 
 
     clock_t start, end;
-    double symb_fact, flop_fact, sol_fact, tot_fact=0;;
+    double symb_fact, flop_fact, sol_fact, tot_fact=0;
+
+    bool amd = false;
 
     if (argc < 2) {
         printf("Usage: ./ichol_demo <matrix_file> [-t threshold] [-p max_row_nonzeros] [-tol tolerance] [-iter max_iterations]\n");
@@ -793,6 +800,8 @@ int main (int argc, char* argv[])
         
         else if (strcmp(argv[i], "-iter") == 0)
             max_iter = atoi(argv[++i]);
+        else if (strcmp(argv[i], "-amd") == 0)
+            amd = true;
     }
 
     yellow(); printf("n = %li\n", n); reset();
@@ -813,15 +822,25 @@ int main (int argc, char* argv[])
     } 
     cs_gaxpy(A, x, b);
 
-    // -------------- FULL CHOLESKY -------------- //
-    if (n > 1000)
+    // -------------- AMD REORDERING -------------- //
+    csi *P, *pinv;
+    // cs_amd reordering of A
+    if (amd)
     {
-        // int gb = S->cp[n] * 32 / 8 / 1000000000;
-        // printf ("Cholesky error, trying to allocate %d GB\n", gb) ;
-        printf("Skipping full Cholesky factorization\n");
-        // fprintf(outfile, "chol,,,,,,,,\n");
+        green();
+        printf("Using AMD reordering, A = amd(A+A')\n");
+        reset();
+        P = cs_amd (1, A) ; 
+        pinv = cs_pinv (P, n) ;
+        A = cs_symperm (A, pinv, 1);
     }
-    else
+    
+    // -------------- FULL CHOLESKY -------------- //
+    if (n > 100000 )
+    {
+        printf("Skipping full Cholesky factorization\n");
+    }
+    else if (t == -1 && max_p == -1)
     {
         red();
         printf("\nSolution with full Cholesky:\n");
@@ -849,7 +868,7 @@ int main (int argc, char* argv[])
         green();
         printf("%f\n", tot_fact);
         reset(); 
-        fprintf(outfile, "chol,,,%ld,%f,%f,%f,%f,%f\n", ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact);
+        fprintf(outfile, "chol,,,%ld,%f,%f,%f,%f,%f,%ld\n", ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact, L_vals);
     } 
 
     // -------------- CG -------------- //
@@ -868,7 +887,7 @@ int main (int argc, char* argv[])
         green();
         printf("%f\n", tot_fact);
         reset();
-        fprintf(outfile, "cg,,,%ld,%0.3e,,,%f,%f\n", ret.iter, ret.residual, tot_fact, tot_fact);
+        fprintf(outfile, "cg,,,%ld,%f,,,%f,%f,\n", ret.iter, ret.residual, tot_fact, tot_fact);
     }
 
     // -------------- ICHOL -------------- //
@@ -897,7 +916,7 @@ int main (int argc, char* argv[])
         green();
         printf("%f\n", tot_fact);
         reset();
-        fprintf(outfile, "jones,%0.3e,,%ld,%0.3e,,%f,%f,%f\n", t, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
+        fprintf(outfile, "jones,%f,,%ld,%f,,%f,%f,%f,%ld\n", t, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact, L->p[n]);
         // cs_print(L, 0);
     }
     
@@ -915,7 +934,7 @@ int main (int argc, char* argv[])
             // -------------- BAD -------------- //
             tot_fact = 0;
             red();
-            printf("\nSolution with PCG, ichol(t=%0.1e, p=%d):\n", t, max_p); 
+            printf("\nSolution with PCG, modified optimal(t=%0.1e, p=%d):\n", t, max_p); 
             reset();
             start = clock();     
             S = cs_schol (0, A) ;      
@@ -923,7 +942,6 @@ int main (int argc, char* argv[])
             symb_fact = ((double) (end - start)) / CLOCKS_PER_SEC;
             tot_fact += symb_fact;
             double gb = S->cp[n] * 64 / 8 / 1000000000;
-            printf ("Full Cholesky would have %ld nnz, or %0.2f GB\n", S->cp[n], gb) ;
             printf("Time for symbolic factorization: %f\n", symb_fact);
 
             start = clock();
@@ -940,12 +958,12 @@ int main (int argc, char* argv[])
             sol_fact = ((double) (end - start)) / CLOCKS_PER_SEC; 
             tot_fact += sol_fact;
             printf("Time for solve: %f\n", sol_fact);
-            printf("ichol(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
+            printf("modified_optimal(t=%0.3e, p=%d) + solve CPU Time: ", t, max_p);
             green();
             printf("%f\n", tot_fact);
             reset();
-            fprintf(outfile, "ichol,%0.3e,%d,%ld,%0.3e,%f,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact);
-
+            fprintf(outfile, "modified_optimal,%f,%d,%ld,%f,%f,%f,%f,%f,%ld\n", t, max_p, ret.iter, ret.residual, symb_fact, flop_fact, sol_fact, tot_fact, L->p[n]);
+            return 0;
         }
         else {
             printf("Skipping bad ichol because n = %ld > 100000\n", n);
@@ -974,18 +992,24 @@ int main (int argc, char* argv[])
         green();
         printf("%f\n", tot_fact);
         reset();
-        fprintf(outfile, "jones_tp,%0.3e,%d,%ld,%0.3e,,%f,%f,%f\n", t, max_p, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact);
+        fprintf(outfile, "jones_tp,%f,%d,%ld,%f,,%f,%f,%f,%ld\n", t, max_p, ret.iter, ret.residual, flop_fact, sol_fact, tot_fact, L->p[n]);
         // cs_print(L, 0);
-        //write the L matrix to a file
-        // FILE *L_file = fopen("L.txt", "w");
-        // for (csi i = 0; i < n; i++)
-        // {
-        //     for (csi j = L->p[i]; j < L->p[i+1]; j++)
-        //     {
-        //         fprintf(L_file, "%0.3e ", L->x[j]);
-        //     }
-        // }
-        // fclose(L_file);
+
+        //write the L matrix values to a file for histogram plotting
+        if (n < 10000){
+            yellow();
+            printf("\nWriting L matrix values to file...\n");
+            reset();
+            FILE *L_file = fopen("/tmp/L.txt", "w");
+            for (csi i = 0; i < n; i++)
+            {
+                for (csi j = L->p[i]; j < L->p[i+1]; j++)
+                {
+                    fprintf(L_file, "%0.3e ", L->x[j]);
+                }
+            }
+            fclose(L_file);
+        }
     }
     
     fclose(fp);

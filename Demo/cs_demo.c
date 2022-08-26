@@ -83,6 +83,10 @@ problem *get_problem (FILE *f, double tol)
     problem *Prob ;
     Prob = cs_calloc (1, sizeof (problem)) ;
     if (!Prob) return (NULL) ;
+    
+    // fp = fopen(argv[1], "rb+");
+    // T = cs_load(fp) ;
+
     T = cs_load (f) ;                   /* load triplet matrix T from a file */
     Prob->A = A = cs_compress (T) ;     /* A = compressed-column form of T */
     cs_spfree (T) ;                     /* clear T */
@@ -142,33 +146,33 @@ csi demo2 (problem *Prob)
     printf ("blocks: %g singletons: %g structural rank: %g\n",
         (double) nb, (double) ns, (double) sprank) ;
     cs_dfree (D) ;
-    for (order = 0 ; order <= 3 ; order += 3)   /* natural and amd(A'*A) */
-    {
-        if (!order && m > 1000) continue ;
-        printf ("QR   ") ;
-        print_order (order) ;
-        rhs (x, b, m) ;                         /* compute right-hand side */
-        t = tic () ;
-        ok = cs_qrsol (order, C, x) ;           /* min norm(Ax-b) with QR */
-        printf ("time: %8.2f ", toc (t)) ;
-        print_resid (ok, C, x, b, resid) ;      /* print residual */
-    }
-    if (m != n || sprank < n) return (1) ;      /* return if rect. or singular*/
-    for (order = 0 ; order <= 3 ; order++)      /* try all orderings */
-    {
-        if (!order && m > 1000) continue ;
-        printf ("LU   ") ;
-        print_order (order) ;
-        rhs (x, b, m) ;                         /* compute right-hand side */
-        t = tic () ;
-        ok = cs_lusol (order, C, x, tol) ;      /* solve Ax=b with LU */
-        printf ("time: %8.2f ", toc (t)) ;
-        print_resid (ok, C, x, b, resid) ;      /* print residual */
-    }
-    if (!Prob->sym) return (1) ;
+    // for (order = 0 ; order <= 3 ; order += 3)   /* natural and amd(A'*A) */
+    // {
+    //     if (!order && m > 1000) continue ;
+    //     printf ("QR   ") ;
+    //     print_order (order) ;
+    //     rhs (x, b, m) ;                         /* compute right-hand side */
+    //     t = tic () ;
+    //     ok = cs_qrsol (order, C, x) ;           /* min norm(Ax-b) with QR */
+    //     printf ("time: %8.2f ", toc (t)) ;
+    //     print_resid (ok, C, x, b, resid) ;      /* print residual */
+    // }
+    // if (m != n || sprank < n) return (1) ;      /* return if rect. or singular*/
+    // for (order = 0 ; order <= 3 ; order++)      /* try all orderings */
+    // {
+    //     if (!order && m > 1000) continue ;
+    //     printf ("LU   ") ;
+    //     print_order (order) ;
+    //     rhs (x, b, m) ;                         /* compute right-hand side */
+    //     t = tic () ;
+    //     ok = cs_lusol (order, C, x, tol) ;      /* solve Ax=b with LU */
+    //     printf ("time: %8.2f ", toc (t)) ;
+    //     print_resid (ok, C, x, b, resid) ;      /* print residual */
+    // }
+    // if (!Prob->sym) return (1) ;
     for (order = 0 ; order <= 1 ; order++)      /* natural and amd(A+A') */
     {
-        if (!order && m > 1000) continue ;
+        // if (!order && m > 1000) continue ;
         printf ("Chol ") ;
         print_order (order) ;
         rhs (x, b, m) ;                         /* compute right-hand side */
